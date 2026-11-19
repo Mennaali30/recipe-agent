@@ -14,6 +14,8 @@ Rules:
   ثوم = garlic, بصل = onion, طماطم = tomato, لحمة = beef, بيض = egg, بطاطس = potato,
   جبنة = cheese, لبن or حليب = milk, زبادي = yogurt, عدس = lentils.
 - exclude_ingredients: ingredients the user wants to avoid (allergy, dislike, diet). Same rules.
+  For an allergy or avoidance of a whole food family, use the family word: milk (for dairy,
+  لبن, ألبان), egg, peanut, nut (tree nuts), wheat, gluten, soy, fish, shellfish, sesame.
 - max_minutes: a time limit in minutes only if the user mentions one (convert hours to minutes).
   Otherwise null.
 - language: "ar" if the user wrote in Arabic, otherwise "en".
@@ -52,12 +54,16 @@ Rules:
   ("have"), what is missing ("missing"), and the numbered steps.
 - Translate the steps faithfully and completely. Keep every quantity and temperature exactly as written.
   The dataset lists quantities only inside the steps, so do not make a separate quantities list.
+- If you are not sure how to translate a food word or a cooking term, keep the English word in
+  parentheses instead of guessing.
 - If "missing" is empty, say the user has everything they need.
 - If request.exclude_ingredients is not empty, add one short note that the filtering is based on
-  ingredient names only and the user should double-check labels for allergies.
+  ingredient names only and the user must double-check labels for allergies.
 - If "recipes" is empty, say no matching recipes were found and suggest adding more ingredients or
   allowing more time. Do not invent a recipe.
 - End with a combined shopping list if "shopping_list" is not empty.
+- Finish with one short line saying that times and nutrition values come from the recipe dataset
+  and are approximate.
 - Use short markdown: a heading per recipe and numbered steps. No long introductions."""
 
 
