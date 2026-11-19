@@ -4,12 +4,24 @@ import re
 from recipe_agent.retriever import get_recipe, search
 
 # Assumed to be available in any kitchen, so they are never reported as missing.
-PANTRY = {"salt", "pepper", "black pepper", "water", "oil", "vegetable oil"}
+PANTRY = {
+    "salt", "kosher salt", "sea salt", "pepper", "black pepper",
+    "ground black pepper", "water", "oil", "vegetable oil", "olive oil",
+    "extra virgin olive oil", "canola oil", "cooking oil",
+}
 
 _DESCRIPTORS = {
     "fresh", "freshly", "chopped", "minced", "diced", "sliced", "large", "small",
     "medium", "boneless", "skinless", "unsalted", "salted", "whole", "finely",
-    "cooked", "raw", "frozen",
+    "cooked", "raw", "frozen", "of", "and",
+}
+
+# Words that turn an ingredient into a different product:
+# "chicken broth" is not "chicken", "garlic powder" is not "garlic".
+_PROCESSED = {
+    "broth", "stock", "bouillon", "sauce", "powder", "soup", "paste", "oil",
+    "butter", "cream", "milk", "cheese", "flour", "sugar", "vinegar",
+    "dressing", "seasoning", "extract", "mix",
 }
 
 
@@ -21,7 +33,7 @@ def _stem(token: str) -> str:
         return token[:-2]
     if len(token) > 4 and token.endswith(("ches", "shes", "xes")):
         return token[:-2]
-    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+    if len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us")):
         return token[:-1]
     return token
 
@@ -36,9 +48,21 @@ def normalize(text: str) -> frozenset:
 _PANTRY = {normalize(p) for p in PANTRY}
 
 
-def _matches(a: frozenset, b: frozenset) -> bool:
-    """True if one keyword set contains the other (chicken ~ chicken breast)."""
-    return bool(a) and bool(b) and (a <= b or b <= a)
+def _matches(user: frozenset, ing: frozenset) -> bool:
+    """Does what the user typed cover this recipe ingredient?
+
+    chicken ~ chicken breast (extra words are fine),
+    but chicken !~ chicken broth (extra word turns it into another product).
+    """
+    if not user or not ing:
+        return False
+    if user == ing:
+        return True
+    if user < ing:
+        return not ((ing - user) & _PROCESSED)
+    if ing < user:
+        return not ((user - ing) & _PROCESSED)
+    return False
 
 
 def compare_ingredients(user_ingredients, recipe_ingredients, assume_pantry: bool = True) -> dict:
