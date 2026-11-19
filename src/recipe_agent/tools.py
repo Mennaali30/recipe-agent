@@ -46,6 +46,11 @@ def normalize(text: str) -> frozenset:
     return frozenset(_stem(t) for t in tokens if t not in _DESCRIPTORS)
 
 
+def _words(text) -> frozenset:
+    """All stemmed words of a free text (used to scan recipe steps)."""
+    return frozenset(_stem(t) for t in re.findall(r"[a-z]+", str(text).lower()))
+
+
 _PANTRY = {normalize(p) for p in PANTRY}
 
 
@@ -156,24 +161,30 @@ def get_instructions(recipe_id) -> list:
     return [str(s) for s in get_recipe(recipe_id)["instructions"]]
 
 
-def _is_excluded(recipe_name, recipe_ingredients, exclude) -> bool:
-    """True if the recipe's name or ingredients contain an excluded ingredient.
+def _is_excluded(recipe_name, recipe_ingredients, exclude, instructions=None) -> bool:
+    """True if the recipe's name, ingredients or steps contain an excluded ingredient.
 
     Allergen words (milk, egg, nut, wheat, ...) are expanded to their whole family,
-    so 'milk' also excludes cheese, butter, cream, etc. Based on ingredient names only:
-    hidden sources (e.g. chocolate, bread) are not detected.
+    so 'milk' also excludes cheese, butter, cream, etc. The steps are scanned too,
+    because some recipes mention an ingredient only there (e.g. 'serve with sour cream').
+    Hidden sources (e.g. chocolate, bread) are still not detected.
     """
     if not exclude:
         return False
     texts = [normalize(recipe_name)] + [normalize(i) for i in recipe_ingredients]
+    step_words = _words(" ".join(instructions)) if instructions else frozenset()
     for item in exclude:
         target = normalize(item)
         if not target:
             continue
         if any(target <= text for text in texts):
             return True
+        if step_words and target <= step_words:
+            return True
         family = frozenset().union(*(ALLERGEN_GROUPS.get(tok, frozenset()) for tok in target))
         if family and any(family & text for text in texts):
+            return True
+        if family and family & step_words:
             return True
     return False
 
@@ -193,7 +204,8 @@ def find_recipes(
     for hit in search(query, n_results=candidates, max_minutes=max_minutes):
         recipe = get_recipe(hit["recipe_id"])
         recipe_ings = list(recipe["ingredients"])
-        if _is_excluded(recipe["name"], recipe_ings, exclude):
+        steps = [str(s) for s in recipe["instructions"]]
+        if _is_excluded(recipe["name"], recipe_ings, exclude, steps):
             continue
         used = _used_count(ingredients, recipe_ings)
         if used < min_used:
