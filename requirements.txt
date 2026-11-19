@@ -1,0 +1,11 @@
+langgraph
+langchain-core
+langchain-community
+langchain-openai
+langchain-google-genai
+chromadb
+sentence-transformers
+pydantic
+python-dotenv
+pandas
+gradio
