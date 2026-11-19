@@ -5,15 +5,16 @@ from recipe_agent.retriever import get_recipe, search
 
 # Assumed to be available in any kitchen, so they are never reported as missing.
 PANTRY = {
-    "salt", "kosher salt", "sea salt", "pepper", "black pepper",
-    "ground black pepper", "water", "oil", "vegetable oil", "olive oil",
-    "extra virgin olive oil", "canola oil", "cooking oil",
+    "salt", "kosher salt", "sea salt", "table salt", "pepper", "black pepper",
+    "ground black pepper", "water", "boiling water", "oil", "vegetable oil",
+    "olive oil", "extra virgin olive oil", "canola oil", "cooking oil",
 }
 
 _DESCRIPTORS = {
     "fresh", "freshly", "chopped", "minced", "diced", "sliced", "large", "small",
     "medium", "boneless", "skinless", "unsalted", "salted", "whole", "finely",
     "cooked", "raw", "frozen", "of", "and", "ground", "dried",
+    "table", "boiling", "all", "purpose", "extra", "virgin", "kosher", "sea",
 }
 
 # Words that turn an ingredient into a different product:
@@ -21,7 +22,7 @@ _DESCRIPTORS = {
 _PROCESSED = {
     "broth", "stock", "bouillon", "sauce", "powder", "soup", "paste", "oil",
     "butter", "cream", "milk", "cheese", "flour", "sugar", "vinegar",
-    "dressing", "seasoning", "extract", "mix",
+    "dressing", "seasoning", "extract", "mix", "instant",
 }
 
 
@@ -46,6 +47,44 @@ def normalize(text: str) -> frozenset:
 
 
 _PANTRY = {normalize(p) for p in PANTRY}
+
+
+def _group(*words) -> frozenset:
+    return frozenset(_stem(w) for w in words)
+
+
+# Allergen families. Matching is deliberately conservative (it may exclude harmless
+# recipes such as ones with coconut milk) because a wrong inclusion is worse than a miss.
+_DAIRY = _group(
+    "milk", "cheese", "butter", "cream", "yogurt", "yoghurt", "whey", "ghee",
+    "buttermilk", "casein", "custard", "mozzarella", "parmesan", "cheddar",
+    "feta", "ricotta", "gruyere", "mascarpone", "halloumi", "paneer", "kefir",
+)
+_WHEAT = _group(
+    "wheat", "flour", "bread", "breadcrumb", "pasta", "noodle", "couscous",
+    "semolina", "barley", "rye", "bulgur", "cracker", "tortilla", "spaghetti",
+    "macaroni", "pita",
+)
+ALLERGEN_GROUPS = {
+    "milk": _DAIRY,
+    "dairy": _DAIRY,
+    "lactose": _DAIRY,
+    "egg": _group("egg", "mayonnaise", "meringue"),
+    "peanut": _group("peanut"),
+    "nut": _group(
+        "nut", "almond", "walnut", "pecan", "cashew", "pistachio", "hazelnut",
+        "macadamia", "peanut",
+    ),
+    "wheat": _WHEAT,
+    "gluten": _WHEAT,
+    "soy": _group("soy", "soya", "tofu", "edamame", "miso", "tempeh"),
+    "fish": _group("fish", "salmon", "tuna", "cod", "anchovy", "tilapia", "sardine", "trout"),
+    "shellfish": _group(
+        "shellfish", "shrimp", "prawn", "crab", "lobster", "clam", "mussel",
+        "oyster", "scallop",
+    ),
+    "sesame": _group("sesame", "tahini"),
+}
 
 
 def _matches(user: frozenset, ing: frozenset) -> bool:
@@ -83,7 +122,7 @@ def compare_ingredients(user_ingredients, recipe_ingredients, assume_pantry: boo
 
 
 def nutrition_per_serving(recipe: dict) -> dict:
-    """Nutrition values as given by the dataset (treated as per-serving)."""
+    """Nutrition values as given by the dataset (treated as per-serving, approximate)."""
     return {
         "calories": round(float(recipe["calories"])),
         "protein_g": round(float(recipe["protein_g"]), 1),
@@ -118,12 +157,25 @@ def get_instructions(recipe_id) -> list:
 
 
 def _is_excluded(recipe_name, recipe_ingredients, exclude) -> bool:
-    """True if the recipe's name or any ingredient contains an excluded ingredient."""
+    """True if the recipe's name or ingredients contain an excluded ingredient.
+
+    Allergen words (milk, egg, nut, wheat, ...) are expanded to their whole family,
+    so 'milk' also excludes cheese, butter, cream, etc. Based on ingredient names only:
+    hidden sources (e.g. chocolate, bread) are not detected.
+    """
     if not exclude:
         return False
-    targets = [normalize(e) for e in exclude if normalize(e)]
     texts = [normalize(recipe_name)] + [normalize(i) for i in recipe_ingredients]
-    return any(t <= text for t in targets for text in texts)
+    for item in exclude:
+        target = normalize(item)
+        if not target:
+            continue
+        if any(target <= text for text in texts):
+            return True
+        family = frozenset().union(*(ALLERGEN_GROUPS.get(tok, frozenset()) for tok in target))
+        if family and any(family & text for text in texts):
+            return True
+    return False
 
 
 def find_recipes(
@@ -133,7 +185,7 @@ def find_recipes(
 
     Ranking: uses the most of the user's ingredients first, then fewest missing items,
     then highest coverage, then closest semantic match.
-    Recipes containing an excluded ingredient (by name) are dropped.
+    Recipes containing an excluded ingredient (or its allergen family) are dropped.
     """
     query = "Ingredients: " + ", ".join(ingredients)
     min_used = min(2, len(ingredients))
