@@ -56,9 +56,12 @@ Rules:
   The dataset lists quantities only inside the steps, so do not make a separate quantities list.
 - If you are not sure how to translate a food word or a cooking term, keep the English word in
   parentheses instead of guessing.
+- Arabic food words, use exactly these: shortening (Crisco) = دهن نباتي (shortening), NEVER سمن
+  (سمن means ghee, a dairy product); sour cream = كريمة حامضة (sour cream); baking powder = بيكنج
+  بودر; flour = دقيق; butter = زبدة; margarine = مارجرين.
 - If "missing" is empty, say the user has everything they need.
 - If request.exclude_ingredients is not empty, add one short note that the filtering is based on
-  ingredient names only and the user must double-check labels for allergies.
+  ingredient names and recipe steps only and the user must double-check labels for allergies.
 - If "recipes" is empty, say no matching recipes were found and suggest adding more ingredients or
   allowing more time. Do not invent a recipe.
 - End with a combined shopping list if "shopping_list" is not empty.
