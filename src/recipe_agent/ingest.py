@@ -81,13 +81,14 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
         ]
     ).copy()
 
-    # In the raw data some recipes have fewer ingredient names than quantities:
+    # In the raw data many recipes have fewer ingredient names than quantities:
     # their ingredient list is incomplete (e.g. the chicken is missing from a
-    # chicken recipe), so we drop them.
+    # chicken recipe), so we drop them. Recipes with extra names are kept
+    # (quantities are not used).
     q_len = df["RecipeIngredientQuantities"].map(_list_len)
     p_len = df["RecipeIngredientParts"].map(_list_len)
-    mismatch = q_len != p_len
-    print(f"dropped for ingredient/quantity mismatch: {int(mismatch.sum()):,}")
+    mismatch = p_len < q_len
+    print(f"dropped (fewer ingredient names than quantities): {int(mismatch.sum()):,}")
     df = df[~mismatch].copy()
 
     out = pd.DataFrame(
