@@ -13,7 +13,7 @@ PANTRY = {
 _DESCRIPTORS = {
     "fresh", "freshly", "chopped", "minced", "diced", "sliced", "large", "small",
     "medium", "boneless", "skinless", "unsalted", "salted", "whole", "finely",
-    "cooked", "raw", "frozen", "of", "and",
+    "cooked", "raw", "frozen", "of", "and", "ground", "dried",
 }
 
 # Words that turn an ingredient into a different product:
@@ -105,16 +105,29 @@ def shopping_list(missing_lists) -> list:
     return out
 
 
+def _used_count(user_ingredients, recipe_ingredients) -> int:
+    """How many of the USER's ingredients does this recipe actually use?"""
+    user = [normalize(u) for u in user_ingredients]
+    ings = [normalize(i) for i in recipe_ingredients]
+    return sum(1 for u in user if any(_matches(u, i) for i in ings))
+
+
 def find_recipes(ingredients, max_minutes=None, top_k: int = 5, candidates: int = 30) -> list:
-    """Search the index, compare ingredients, and rank by how much the user already has."""
+    """Search the index, compare ingredients, and rank recipes.
+
+    Ranking: uses the most of the user's ingredients first, then fewest missing items,
+    then highest coverage, then closest semantic match.
+    """
     query = "Ingredients: " + ", ".join(ingredients)
-    min_have = min(2, len(ingredients))
+    min_used = min(2, len(ingredients))
     results = []
     for hit in search(query, n_results=candidates, max_minutes=max_minutes):
         recipe = get_recipe(hit["recipe_id"])
-        cmp = compare_ingredients(ingredients, list(recipe["ingredients"]))
-        if len(cmp["have"]) < min_have:
+        recipe_ings = list(recipe["ingredients"])
+        used = _used_count(ingredients, recipe_ings)
+        if used < min_used:
             continue
+        cmp = compare_ingredients(ingredients, recipe_ings)
         results.append(
             {
                 "recipe_id": hit["recipe_id"],
@@ -123,11 +136,12 @@ def find_recipes(ingredients, max_minutes=None, top_k: int = 5, candidates: int 
                 "total_minutes": hit["total_minutes"],
                 "servings": int(recipe["servings"]),
                 "nutrition": nutrition_per_serving(recipe),
+                "used": used,
                 "have": cmp["have"],
                 "missing": cmp["missing"],
                 "coverage": cmp["coverage"],
                 "distance": hit["distance"],
             }
         )
-    results.sort(key=lambda r: (-r["coverage"], len(r["missing"]), r["distance"]))
+    results.sort(key=lambda r: (-r["used"], len(r["missing"]), -r["coverage"], r["distance"]))
     return results[:top_k]
