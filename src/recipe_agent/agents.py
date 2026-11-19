@@ -1,6 +1,9 @@
 """LLM-powered agents. Each agent does one job and returns structured data."""
+import json
+
 from recipe_agent.config import get_llm
 from recipe_agent.schemas import UserRequest
+from recipe_agent.utils import message_text
 
 INTENT_PROMPT = """You extract a cooking request from the user's message. The message may be in
 Arabic (including Egyptian dialect) or English.
@@ -36,3 +39,37 @@ def parse_request(text: str) -> UserRequest:
     if req.max_minutes is not None and req.max_minutes <= 0:
         req.max_minutes = None
     return req
+
+
+RESPONSE_PROMPT = """You write the final answer of a recipe assistant, using ONLY the JSON data you receive.
+
+Rules:
+- Write the whole answer in the language given by request.language ("ar" = clear, simple Arabic;
+  "en" = English).
+- Use only the data provided. Never add ingredients, quantities, times, steps or nutrition values.
+- For each recipe write: its name (when translating to Arabic keep the English name in parentheses),
+  total time in minutes, servings, calories and protein per serving, what the user already has
+  ("have"), what is missing ("missing"), and the numbered steps.
+- Translate the steps faithfully and completely. Keep every quantity and temperature exactly as written.
+  The dataset lists quantities only inside the steps, so do not make a separate quantities list.
+- If "missing" is empty, say the user has everything they need.
+- If request.exclude_ingredients is not empty, add one short note that the filtering is based on
+  ingredient names only and the user should double-check labels for allergies.
+- If "recipes" is empty, say no matching recipes were found and suggest adding more ingredients or
+  allowing more time. Do not invent a recipe.
+- End with a combined shopping list if "shopping_list" is not empty.
+- Use short markdown: a heading per recipe and numbered steps. No long introductions."""
+
+
+def write_answer(request: UserRequest, recipes: list, shopping: list) -> str:
+    """Response agent: structured results -> final answer in the user's language."""
+    payload = {
+        "request": request.model_dump(),
+        "recipes": recipes,
+        "shopping_list": shopping,
+    }
+    llm = get_llm(temperature=0.3)
+    message = llm.invoke(
+        [("system", RESPONSE_PROMPT), ("human", json.dumps(payload, ensure_ascii=False))]
+    )
+    return message_text(message)
