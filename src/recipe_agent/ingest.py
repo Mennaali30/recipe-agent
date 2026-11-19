@@ -1,5 +1,6 @@
 """Prepare a clean, sampled subset of the Food.com recipes dataset for the RAG index."""
 import argparse
+import html
 import re
 from pathlib import Path
 
@@ -29,20 +30,19 @@ def iso_to_minutes(value):
 
 
 def as_list(value):
-    """Turn a parquet list cell into a clean list of non-empty strings."""
+    """Turn a parquet list cell into a clean list of non-empty strings (HTML entities decoded)."""
     if value is None or isinstance(value, str) or not hasattr(value, "__iter__"):
         return []
-    return [str(x).strip() for x in value if x is not None and str(x).strip()]
+    return [
+        html.unescape(str(x)).strip()
+        for x in value
+        if x is not None and str(x).strip()
+    ]
 
 
-def build_ingredient_lines(quantities, parts):
-    """Pair each ingredient with its quantity, e.g. '1/4 granulated sugar'."""
-    lines = []
-    for i, part in enumerate(parts):
-        qty = quantities[i] if i < len(quantities) else ""
-        qty = "" if qty == "NA" else qty
-        lines.append(f"{qty} {part}".strip())
-    return lines
+def clean_text(value) -> str:
+    """Decode HTML entities (e.g. '&amp;') and strip whitespace."""
+    return html.unescape(str(value)).strip()
 
 
 def build_search_text(row) -> str:
@@ -66,28 +66,45 @@ def load_raw(raw_dir, min_reviews, min_rating) -> pd.DataFrame:
     return table.to_pandas()
 
 
+def _list_len(xs):
+    """Length of a list-like cell, or -1 if the cell is missing / not a list."""
+    if xs is None or isinstance(xs, str) or not hasattr(xs, "__len__"):
+        return -1
+    return len(xs)
+
+
 def clean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(
-        subset=["Name", "Calories", "RecipeIngredientParts", "RecipeInstructions"]
+        subset=[
+            "Name", "Calories", "RecipeIngredientParts",
+            "RecipeInstructions", "RecipeServings",
+        ]
     ).copy()
 
-    quantities = df["RecipeIngredientQuantities"].map(as_list)
-    parts = df["RecipeIngredientParts"].map(as_list)
+    # In the raw data some recipes have fewer ingredient names than quantities:
+    # their ingredient list is incomplete (e.g. the chicken is missing from a
+    # chicken recipe), so we drop them.
+    q_len = df["RecipeIngredientQuantities"].map(_list_len)
+    p_len = df["RecipeIngredientParts"].map(_list_len)
+    mismatch = q_len != p_len
+    print(f"dropped for ingredient/quantity mismatch: {int(mismatch.sum()):,}")
+    df = df[~mismatch].copy()
 
     out = pd.DataFrame(
         {
             "recipe_id": df["RecipeId"].astype(int),
-            "name": df["Name"].astype(str).str.strip(),
-            "description": df["Description"].fillna("").astype(str).str.strip(),
-            "category": df["RecipeCategory"].fillna("").astype(str),
+            "name": df["Name"].map(clean_text),
+            "description": df["Description"].fillna("").map(clean_text),
+            "category": df["RecipeCategory"].fillna("").map(clean_text),
             "keywords": df["Keywords"].map(as_list),
-            "ingredients": parts.map(lambda xs: [x.lower() for x in xs]),
-            "ingredient_lines": [build_ingredient_lines(q, p) for q, p in zip(quantities, parts)],
+            "ingredients": df["RecipeIngredientParts"].map(
+                lambda xs: [x.lower() for x in as_list(xs)]
+            ),
             "instructions": df["RecipeInstructions"].map(as_list),
             "prep_minutes": df["PrepTime"].map(iso_to_minutes),
             "cook_minutes": df["CookTime"].map(iso_to_minutes),
             "total_minutes": df["TotalTime"].map(iso_to_minutes),
-            "servings": df["RecipeServings"],
+            "servings": df["RecipeServings"].astype(int),
             "rating": df["AggregatedRating"],
             "review_count": df["ReviewCount"],
             "calories": df["Calories"],
@@ -101,6 +118,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     out = out[
         (out["ingredients"].map(len) >= 2)
         & (out["instructions"].map(len) >= 2)
+        & (out["servings"] > 0)
         & (out["calories"] > 0)
         & (out["calories"] <= 3000)
     ]
