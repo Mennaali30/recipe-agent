@@ -112,11 +112,28 @@ def _used_count(user_ingredients, recipe_ingredients) -> int:
     return sum(1 for u in user if any(_matches(u, i) for i in ings))
 
 
-def find_recipes(ingredients, max_minutes=None, top_k: int = 5, candidates: int = 30) -> list:
+def get_instructions(recipe_id) -> list:
+    """The recipe's steps, as plain strings."""
+    return [str(s) for s in get_recipe(recipe_id)["instructions"]]
+
+
+def _is_excluded(recipe_name, recipe_ingredients, exclude) -> bool:
+    """True if the recipe's name or any ingredient contains an excluded ingredient."""
+    if not exclude:
+        return False
+    targets = [normalize(e) for e in exclude if normalize(e)]
+    texts = [normalize(recipe_name)] + [normalize(i) for i in recipe_ingredients]
+    return any(t <= text for t in targets for text in texts)
+
+
+def find_recipes(
+    ingredients, max_minutes=None, exclude=None, top_k: int = 5, candidates: int = 40
+) -> list:
     """Search the index, compare ingredients, and rank recipes.
 
     Ranking: uses the most of the user's ingredients first, then fewest missing items,
     then highest coverage, then closest semantic match.
+    Recipes containing an excluded ingredient (by name) are dropped.
     """
     query = "Ingredients: " + ", ".join(ingredients)
     min_used = min(2, len(ingredients))
@@ -124,6 +141,8 @@ def find_recipes(ingredients, max_minutes=None, top_k: int = 5, candidates: int 
     for hit in search(query, n_results=candidates, max_minutes=max_minutes):
         recipe = get_recipe(hit["recipe_id"])
         recipe_ings = list(recipe["ingredients"])
+        if _is_excluded(recipe["name"], recipe_ings, exclude):
+            continue
         used = _used_count(ingredients, recipe_ings)
         if used < min_used:
             continue
