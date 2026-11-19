@@ -9,13 +9,18 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL")
 
 
-def get_llm(temperature: float = 0.3):
+def get_llm(temperature: float = 0.3, timeout: int = 60, max_retries: int = 5):
     """Return a chat model for the configured provider."""
     if LLM_PROVIDER == "gemini":
         if not GEMINI_MODEL:
             raise ValueError("Set GEMINI_MODEL (model code from Google AI Studio).")
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=temperature)
+        return ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            temperature=temperature,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
 
     raise ValueError(f"Unsupported LLM_PROVIDER: {LLM_PROVIDER}")
