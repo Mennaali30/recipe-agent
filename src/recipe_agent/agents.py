@@ -1,7 +1,7 @@
 """LLM-powered agents. Each agent does one job and returns structured data."""
 import json
 
-from recipe_agent.config import get_llm
+from recipe_agent.config import get_llm_chain
 from recipe_agent.schemas import UserRequest
 from recipe_agent.utils import message_text
 
@@ -22,7 +22,7 @@ Rules:
 - Never invent ingredients or constraints the user did not mention."""
 
 
-def _clean_list(items) -> list[str]:
+def _clean_list(items) -> list:
     seen, out = set(), []
     for item in items or []:
         value = str(item).strip().lower()
@@ -34,7 +34,7 @@ def _clean_list(items) -> list[str]:
 
 def parse_request(text: str) -> UserRequest:
     """Intent agent: free text -> UserRequest."""
-    llm = get_llm(temperature=0).with_structured_output(UserRequest)
+    llm = get_llm_chain(temperature=0, schema=UserRequest)
     req = llm.invoke([("system", INTENT_PROMPT), ("human", text)])
     req.ingredients = _clean_list(req.ingredients)
     req.exclude_ingredients = _clean_list(req.exclude_ingredients)
@@ -77,7 +77,7 @@ def write_answer(request: UserRequest, recipes: list, shopping: list) -> str:
         "recipes": recipes,
         "shopping_list": shopping,
     }
-    llm = get_llm(temperature=0.3)
+    llm = get_llm_chain(temperature=0.3)
     message = llm.invoke(
         [("system", RESPONSE_PROMPT), ("human", json.dumps(payload, ensure_ascii=False))]
     )
