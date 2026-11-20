@@ -60,21 +60,28 @@ def _group(*words) -> frozenset:
 
 # Allergen families. Matching is deliberately conservative (it may exclude harmless
 # recipes such as ones with coconut milk) because a wrong inclusion is worse than a miss.
+# Hidden sources not listed here (e.g. chocolate that may contain milk) are NOT detected.
 _DAIRY = _group(
     "milk", "cheese", "butter", "cream", "yogurt", "yoghurt", "whey", "ghee",
     "buttermilk", "casein", "custard", "mozzarella", "parmesan", "cheddar",
     "feta", "ricotta", "gruyere", "mascarpone", "halloumi", "paneer", "kefir",
+    "brie", "camembert", "gouda", "provolone", "gorgonzola", "romano",
+    "pecorino", "creamer",
 )
 _WHEAT = _group(
     "wheat", "flour", "bread", "breadcrumb", "pasta", "noodle", "couscous",
     "semolina", "barley", "rye", "bulgur", "cracker", "tortilla", "spaghetti",
-    "macaroni", "pita",
+    "macaroni", "pita", "pastry", "dough", "crust", "bisquick", "biscuit",
+    "pancake", "waffle", "muffin",
 )
 ALLERGEN_GROUPS = {
     "milk": _DAIRY,
     "dairy": _DAIRY,
     "lactose": _DAIRY,
-    "egg": _group("egg", "mayonnaise", "meringue"),
+    "egg": _group(
+        "egg", "mayonnaise", "mayo", "meringue", "eggnog", "custard", "aioli",
+        "hollandaise",
+    ),
     "peanut": _group("peanut"),
     "nut": _group(
         "nut", "almond", "walnut", "pecan", "cashew", "pistachio", "hazelnut",
@@ -82,13 +89,24 @@ ALLERGEN_GROUPS = {
     ),
     "wheat": _WHEAT,
     "gluten": _WHEAT,
-    "soy": _group("soy", "soya", "tofu", "edamame", "miso", "tempeh"),
-    "fish": _group("fish", "salmon", "tuna", "cod", "anchovy", "tilapia", "sardine", "trout"),
+    "soy": _group("soy", "soya", "tofu", "edamame", "miso", "tempeh", "tamari", "soybean"),
+    "fish": _group(
+        "fish", "salmon", "tuna", "cod", "anchovy", "tilapia", "sardine", "trout",
+        "worcestershire", "caesar",
+    ),
     "shellfish": _group(
         "shellfish", "shrimp", "prawn", "crab", "lobster", "clam", "mussel",
-        "oyster", "scallop",
+        "oyster", "scallop", "seafood", "surimi",
     ),
-    "sesame": _group("sesame", "tahini"),
+    "sesame": _group("sesame", "tahini", "hummus", "halva", "halvah"),
+}
+
+# Multi-word forms that the word lists cannot catch (matched on the raw lowercase text).
+_HALF_AND_HALF = re.compile(r"half[\s-]*(?:and|&)[\s-]*half")
+ALLERGEN_PHRASES = {
+    "milk": [_HALF_AND_HALF],
+    "dairy": [_HALF_AND_HALF],
+    "lactose": [_HALF_AND_HALF],
 }
 
 
@@ -167,12 +185,15 @@ def _is_excluded(recipe_name, recipe_ingredients, exclude, instructions=None) ->
     Allergen words (milk, egg, nut, wheat, ...) are expanded to their whole family,
     so 'milk' also excludes cheese, butter, cream, etc. The steps are scanned too,
     because some recipes mention an ingredient only there (e.g. 'serve with sour cream').
-    Hidden sources (e.g. chocolate, bread) are still not detected.
+    Hidden sources that are not in the lists (e.g. chocolate) are still not detected.
     """
     if not exclude:
         return False
-    texts = [normalize(recipe_name)] + [normalize(i) for i in recipe_ingredients]
-    step_words = _words(" ".join(instructions)) if instructions else frozenset()
+    ings = [str(i) for i in recipe_ingredients]
+    steps = [str(s) for s in instructions] if instructions else []
+    texts = [normalize(recipe_name)] + [normalize(i) for i in ings]
+    step_words = _words(" ".join(steps)) if steps else frozenset()
+    raw = " ".join([str(recipe_name), *ings, *steps]).lower()
     for item in exclude:
         target = normalize(item)
         if not target:
@@ -185,6 +206,8 @@ def _is_excluded(recipe_name, recipe_ingredients, exclude, instructions=None) ->
         if family and any(family & text for text in texts):
             return True
         if family and family & step_words:
+            return True
+        if any(p.search(raw) for tok in target for p in ALLERGEN_PHRASES.get(tok, [])):
             return True
     return False
 
