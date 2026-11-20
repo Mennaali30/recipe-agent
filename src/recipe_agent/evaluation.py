@@ -87,8 +87,11 @@ def summarize_retrieval(df: pd.DataFrame) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 2. Allergy-filter audit (no LLM): compare the filter with an independent,
-#    wider word list searched with a different method (regex on the raw text).
+# 2. Allergy-filter audit (no LLM): compare the filter with a wide word list
+#    searched with a different method (regex on the raw text).
+#    NOTE: the filter and this list now share most words, so a low leak rate means
+#    "the filter implements our lists correctly", NOT "every allergen is caught".
+#    Hidden sources absent from both lists (e.g. chocolate) are not measured.
 # --------------------------------------------------------------------------- #
 AUDIT_WORDS = {
     "milk": [
@@ -97,6 +100,7 @@ AUDIT_WORDS = {
         "feta", "gruyere", "mascarpone", "halloumi", "paneer", "half and half",
         "half-and-half", "ice cream", "gelato", "cream cheese", "sour cream",
         "provolone", "gouda", "brie", "cottage cheese", "casein", "lactose",
+        "camembert", "gorgonzola", "romano", "pecorino", "creamer",
     ],
     "egg": [
         "egg", "mayonnaise", "mayo", "meringue", "eggnog", "aioli", "hollandaise",
@@ -111,20 +115,25 @@ AUDIT_WORDS = {
         "wheat", "flour", "bread", "breadcrumb", "bread crumb", "pasta", "noodle",
         "couscous", "semolina", "barley", "rye", "bulgur", "cracker", "tortilla",
         "spaghetti", "macaroni", "pita", "pastry", "dough", "crust", "biscuit",
-        "cookie", "cake", "muffin", "pancake", "waffle",
+        "pancake", "waffle", "muffin", "bisquick",
     ],
     "soy": ["soy", "soya", "tofu", "edamame", "miso", "tempeh", "tamari", "soybean"],
     "fish": [
         "fish", "salmon", "tuna", "cod", "anchovy", "anchovies", "tilapia", "sardine",
         "trout", "haddock", "halibut", "mackerel", "snapper", "catfish", "herring",
-        "worcestershire",
+        "worcestershire", "caesar",
     ],
     "shellfish": [
         "shellfish", "shrimp", "prawn", "crab", "lobster", "clam", "mussel", "oyster",
-        "scallop", "crawfish", "crayfish", "seafood",
+        "scallop", "crawfish", "crayfish", "seafood", "surimi",
     ],
     "sesame": ["sesame", "tahini", "halva", "halvah", "hummus"],
 }
+
+# "egg-free", "eggless", ... must not count as a mention of the allergen
+_FREE_OF = re.compile(
+    r"\b(?:egg|dairy|milk|nut|gluten|soy|wheat|fish|peanut|sesame|lactose)[\s-]*free\b|\beggless\b"
+)
 
 
 def _audit_pattern(words):
@@ -147,6 +156,7 @@ def eval_allergy_audit(sample_size: int = 5000, seed: int = 42, show_examples: i
             ings = [str(i) for i in rec["ingredients"]]
             steps = [str(s) for s in rec["instructions"]]
             text = " ".join([rec["name"], *ings, *steps]).lower()
+            text = _FREE_OF.sub(" ", text)
             matches = [m.group(0) for m in pattern.finditer(text)]
             audit = bool(matches)
             flagged = tools._is_excluded(rec["name"], ings, [allergen], steps)
@@ -228,15 +238,28 @@ def _score_lists(expected, predicted):
     return recall, precision
 
 
-def eval_intent(cases=None, pause: float = 2.0) -> pd.DataFrame:
-    from recipe_agent.agents import parse_request  # imported here: needs the LLM env vars
+def _parse_with_retry(text: str, tries: int = 1, base_wait: float = 20.0):
+    """Call the intent agent; on failure (rate limit, 503...) wait and retry."""
+    from recipe_agent.agents import parse_request  # needs the LLM env vars
 
+    last = None
+    for attempt in range(tries):
+        try:
+            return parse_request(text), None
+        except Exception as exc:
+            last = exc
+            if attempt < tries - 1:
+                time.sleep(base_wait * (attempt + 1))
+    return None, f"{type(last).__name__}: {str(last)[:160]}"
+
+
+def eval_intent(cases=None, pause: float = 13.0, tries: int = 1, base_wait: float = 20.0) -> pd.DataFrame:
+    """One LLM call per case. pause=13s keeps us under 5 requests per minute (free tier)."""
     rows = []
     for case in cases or INTENT_CASES:
-        try:
-            req = parse_request(case["text"])
-        except Exception as exc:  # keep going if one call fails (e.g. 503)
-            rows.append({"text": case["text"], "error": str(exc)[:100], "all_ok": False})
+        req, error = _parse_with_retry(case["text"], tries=tries, base_wait=base_wait)
+        if req is None:
+            rows.append({"text": case["text"], "error": error, "all_ok": False})
             time.sleep(pause)
             continue
         ing_r, ing_p = _score_lists(case["ingredients"], req.ingredients)
@@ -265,10 +288,20 @@ def eval_intent(cases=None, pause: float = 2.0) -> pd.DataFrame:
 
 
 def summarize_intent(df: pd.DataFrame) -> dict:
-    done = df[df["error"].isna()]
-    out = {"cases": len(df), "errors": int(df["error"].notna().sum())}
+    valid = df[df["error"].isna()]
+    out = {
+        "cases": len(df),
+        "valid_cases": len(valid),
+        "errors": int(df["error"].notna().sum()),
+    }
+    if len(valid) == 0:
+        out["warning"] = "no valid case: rerun before using any number"
+        return out
     for col in ["ing_recall", "ing_precision", "exc_recall", "exc_precision"]:
-        out[col + "_%"] = round(100 * float(done[col].mean()), 1)
+        out[col + "_%"] = round(100 * float(valid[col].mean()), 1)
     for col in ["time_ok", "lang_ok", "all_ok"]:
-        out[col + "_%"] = round(100 * float(done[col].astype(float).mean()), 1)
+        out[col + "_%"] = round(100 * float(valid[col].astype(float).mean()), 1)
+    out["all_ok_errors_count_as_fail_%"] = round(100 * float(df["all_ok"].astype(float).mean()), 1)
+    if out["errors"]:
+        out["warning"] = "some calls failed: the % above cover the valid cases only"
     return out
