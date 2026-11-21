@@ -1,8 +1,9 @@
 """LLM-powered agents. Each agent does one job and returns structured data."""
 import json
 
+from recipe_agent import tools
 from recipe_agent.config import get_llm_chain
-from recipe_agent.schemas import UserRequest
+from recipe_agent.schemas import SubstitutionPlan, UserRequest
 from recipe_agent.utils import message_text
 
 INTENT_PROMPT = """You extract a cooking request from the user's message. The message may be in
@@ -43,6 +44,75 @@ def parse_request(text: str) -> UserRequest:
     return req
 
 
+SUBSTITUTION_PROMPT = """You help choose ingredient substitutions for recipes.
+
+You receive JSON: a list of recipes, each with "options". Every option has a "missing"
+ingredient and a list of "candidates" (allowed substitutes, already checked for allergies).
+
+For each missing ingredient:
+- Decide whether one candidate is a sensible swap IN THAT RECIPE. Use the recipe name
+  (for example egg replacers suit cakes and muffins, not omelets or fried eggs).
+- Choose at most one candidate per missing ingredient. Prefer candidates with user_has = true.
+- If no candidate fits, skip that ingredient. Skipping is fine.
+- Copy recipe_id, missing and substitute EXACTLY as they appear in the input.
+- Never invent a substitute that is not in the candidates."""
+
+
+def plan_substitutions(request: UserRequest, recipes: list, llm=None) -> list:
+    """Substitution agent: pick substitutes for missing ingredients.
+
+    Code builds the allowed candidates, the LLM chooses among them, and code validates the
+    choices (anything not in the candidate list is dropped). One LLM call for all recipes,
+    and none at all when no missing ingredient has a candidate.
+    """
+    items, allowed = [], {}
+    for recipe in recipes:
+        options = []
+        for missing in recipe.get("missing", []):
+            cands = tools.substitute_candidates(
+                missing, request.ingredients, request.exclude_ingredients
+            )
+            if cands:
+                options.append({"missing": missing, "candidates": cands})
+                allowed[(recipe["recipe_id"], missing.strip().lower())] = (
+                    missing,
+                    {c["substitute"].strip().lower(): c for c in cands},
+                )
+        if options:
+            items.append(
+                {"recipe_id": recipe["recipe_id"], "name": recipe["name"], "options": options}
+            )
+    if not items:
+        return []
+
+    llm = llm or get_llm_chain(temperature=0, schema=SubstitutionPlan)
+    plan = llm.invoke(
+        [("system", SUBSTITUTION_PROMPT), ("human", json.dumps(items, ensure_ascii=False))]
+    )
+
+    result, seen = [], set()
+    for choice in plan.choices:
+        key = (choice.recipe_id, choice.missing.strip().lower())
+        entry = allowed.get(key)
+        if entry is None or key in seen:
+            continue
+        original_missing, by_name = entry
+        cand = by_name.get(choice.substitute.strip().lower())
+        if cand is None:
+            continue  # invented by the LLM: dropped
+        seen.add(key)
+        result.append(
+            {
+                "recipe_id": choice.recipe_id,
+                "missing": original_missing,
+                "substitute": cand["substitute"],
+                "note": cand["note"],
+                "user_has": cand["user_has"],
+            }
+        )
+    return result
+
+
 RESPONSE_PROMPT = """You write the final answer of a recipe assistant, using ONLY the JSON data you receive.
 
 Rules:
@@ -59,6 +129,11 @@ Rules:
 - Arabic food words, use exactly these: shortening (Crisco) = دهن نباتي (shortening), NEVER سمن
   (سمن means ghee, a dairy product); sour cream = كريمة حامضة (sour cream); baking powder = بيكنج
   بودر; flour = دقيق; butter = زبدة; margarine = مارجرين.
+- If a recipe has a non-empty "substitutions" list, add under it a short section (Arabic: بدائل
+  ممكنة, English: Possible substitutions). For each item write: the missing ingredient, the
+  substitute, and the note translated faithfully. If "user_has" is true, say the user already has
+  it. Use only what is in the data: never add other substitutes or quantities. Say these are
+  suggestions that were not tested.
 - If "missing" is empty, say the user has everything they need.
 - If request.exclude_ingredients is not empty, add one short note that the filtering is based on
   ingredient names and recipe steps only and the user must double-check labels for allergies.
