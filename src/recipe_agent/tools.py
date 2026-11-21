@@ -92,6 +92,7 @@ ALLERGEN_GROUPS = {
     "soy": _group("soy", "soya", "tofu", "edamame", "miso", "tempeh", "tamari", "soybean"),
     "fish": _group(
         "fish", "salmon", "tuna", "cod", "anchovy", "tilapia", "sardine", "trout",
+        "catfish", "snapper", "haddock", "halibut", "mackerel", "herring",
         "worcestershire", "caesar",
     ),
     "shellfish": _group(
