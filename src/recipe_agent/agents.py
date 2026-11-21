@@ -25,7 +25,16 @@ Rules:
   حساسية من اللبن"). Merely mentioning an allergy is NOT a request to remember: use false.
 - forget_memory: true ONLY if the user explicitly asks to forget or clear saved allergies or
   preferences (for example "forget my allergies", "انسي الحساسيات اللي حفظتيها").
+- clarifying_question: ONLY when the user gave NO ingredients they have. Then write ONE short
+  reply (at most two sentences) in the user's language that asks which ingredients they have.
+  Tailor it to what they said: if they mention a kind of food or a diet (light, vegetarian,
+  spicy, quick...), acknowledge it in a few words and ask for the ingredients; if it is a
+  greeting or a question about what you can do, say in one sentence that you suggest recipes
+  from the ingredients they have, then ask for them. Do not suggest any recipe and do not give
+  health or allergy advice. If the user gave ingredients, use null.
 - Never invent ingredients or constraints the user did not mention."""
+
+MAX_QUESTION_CHARS = 300
 
 
 def _clean_list(items) -> list:
@@ -38,14 +47,19 @@ def _clean_list(items) -> list:
     return out
 
 
-def parse_request(text: str) -> UserRequest:
-    """Intent agent: free text -> UserRequest."""
-    llm = get_llm_chain(temperature=0, schema=UserRequest)
+def parse_request(text: str, llm=None) -> UserRequest:
+    """Intent agent: free text -> UserRequest (one LLM call)."""
+    llm = llm or get_llm_chain(temperature=0, schema=UserRequest)
     req = llm.invoke([("system", INTENT_PROMPT), ("human", text)])
     req.ingredients = _clean_list(req.ingredients)
     req.exclude_ingredients = _clean_list(req.exclude_ingredients)
     if req.max_minutes is not None and req.max_minutes <= 0:
         req.max_minutes = None
+    # The clarifying question is only kept when there are no ingredients and it looks sane.
+    question = (req.clarifying_question or "").strip()
+    if req.ingredients or len(question) < 5 or len(question) > MAX_QUESTION_CHARS:
+        question = ""
+    req.clarifying_question = question or None
     return req
 
 
