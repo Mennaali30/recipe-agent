@@ -23,6 +23,20 @@ class UserRequest(BaseModel):
         default="en",
         description="Language the user wrote in: 'ar' for Arabic, 'en' for English.",
     )
+    remember: bool = Field(
+        default=False,
+        description=(
+            "True ONLY if the user explicitly asks to remember / save the allergies or avoided "
+            "ingredients for next time (e.g. 'remember that I am allergic to...', 'افتكري إني...')."
+        ),
+    )
+    forget_memory: bool = Field(
+        default=False,
+        description=(
+            "True ONLY if the user explicitly asks to forget / clear saved allergies or "
+            "preferences (e.g. 'forget my allergies', 'انسي الحساسيات')."
+        ),
+    )
 
 
 class SubstitutionChoice(BaseModel):
