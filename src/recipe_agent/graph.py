@@ -1,5 +1,5 @@
 """LangGraph workflow:
-parse -> memory -> (clarify | search (widen once if few results) -> substitute -> respond).
+parse -> memory -> (clarify | search (widen once if few results) -> substitute -> verify -> respond -> check).
 """
 import logging
 from functools import lru_cache
@@ -7,7 +7,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from recipe_agent import memory, tools
+from recipe_agent import memory, tools, verifier
 from recipe_agent.agents import parse_request, plan_substitutions, write_answer
 
 log = logging.getLogger(__name__)
@@ -27,6 +27,8 @@ class GraphState(TypedDict, total=False):
     shopping: list
     attempt: int
     answer: str
+    verifier_report: dict
+    fallback: str
 
 
 def parse_node(state: GraphState) -> dict:
@@ -87,6 +89,13 @@ def substitute_node(state: GraphState) -> dict:
     return {"recipes": recipes}
 
 
+def verify_node(state: GraphState) -> dict:
+    """Code only (no LLM): re-check the final recipes against the allergies before writing."""
+    kept, issues = verifier.verify_recipes(state["request"], state["recipes"])
+    shopping = tools.shopping_list([r["missing"] for r in kept])
+    return {"recipes": kept, "shopping": shopping, "verifier_report": {"removed": issues}}
+
+
 def _only_pantry(ingredients) -> bool:
     """True if every ingredient is something we assume everyone has (salt, water, oil...)."""
     norms = [tools.normalize(i) for i in ingredients]
@@ -132,15 +141,54 @@ def clarify_node(state: GraphState) -> dict:
 
 
 def respond_node(state: GraphState) -> dict:
-    return {
-        "answer": write_answer(
+    """Write the answer with the LLM; if that fails, build a plain answer from the data."""
+    try:
+        text = write_answer(
             state["request"],
             state["recipes"],
             state["shopping"],
             saved_exclusions=state.get("saved_exclusions"),
             memory_event=state.get("memory_event"),
         )
-    }
+        return {"answer": text, "fallback": None}
+    except Exception as exc:
+        log.warning("response step failed, using the plain answer: %s", type(exc).__name__)
+        return {
+            "answer": verifier.fallback_answer(
+                state["request"],
+                state["recipes"],
+                state["shopping"],
+                saved_exclusions=state.get("saved_exclusions"),
+                memory_event=state.get("memory_event"),
+                reason="llm_error",
+            ),
+            "fallback": "llm_error",
+        }
+
+
+def check_node(state: GraphState) -> dict:
+    """Code only (no LLM): scan the written answer; swap it for the plain one if it leaks."""
+    if state.get("fallback"):
+        return {}  # already built by code from verified data
+    report = dict(state.get("verifier_report") or {})
+    blocking, info = verifier.check_answer(state["request"], state["recipes"], state["answer"])
+    report["answer_problems"] = blocking
+    report["number_notes"] = info
+    if blocking:
+        log.warning("answer check failed (%s): using the plain answer", blocking)
+        return {
+            "answer": verifier.fallback_answer(
+                state["request"],
+                state["recipes"],
+                state["shopping"],
+                saved_exclusions=state.get("saved_exclusions"),
+                memory_event=state.get("memory_event"),
+                reason="check_failed",
+            ),
+            "fallback": "check_failed",
+            "verifier_report": report,
+        }
+    return {"verifier_report": report}
 
 
 def after_memory(state: GraphState) -> str:
@@ -163,8 +211,10 @@ def build_graph():
     graph.add_node("memory", memory_node)
     graph.add_node("search", search_node)
     graph.add_node("substitute", substitute_node)
+    graph.add_node("verify", verify_node)
     graph.add_node("clarify", clarify_node)
     graph.add_node("respond", respond_node)
+    graph.add_node("check", check_node)
 
     graph.add_edge(START, "parse")
     graph.add_edge("parse", "memory")
@@ -172,8 +222,10 @@ def build_graph():
     graph.add_conditional_edges(
         "search", after_search, {"search": "search", "substitute": "substitute"}
     )
-    graph.add_edge("substitute", "respond")
-    graph.add_edge("respond", END)
+    graph.add_edge("substitute", "verify")
+    graph.add_edge("verify", "respond")
+    graph.add_edge("respond", "check")
+    graph.add_edge("check", END)
     graph.add_edge("clarify", END)
     return graph.compile()
 
