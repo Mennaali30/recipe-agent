@@ -1,4 +1,5 @@
-"""Plain-Python tools: ingredient matching, shopping list, nutrition, recipe lookup."""
+"""Plain-Python tools: ingredient matching, shopping list, nutrition, recipe lookup,
+allergy filtering and substitution candidates."""
 import re
 
 from recipe_agent.retriever import get_recipe, search
@@ -211,6 +212,162 @@ def _is_excluded(recipe_name, recipe_ingredients, exclude, instructions=None) ->
         if any(p.search(raw) for tok in target for p in ALLERGEN_PHRASES.get(tok, [])):
             return True
     return False
+
+
+# --------------------------------------------------------------------------- #
+# Substitutions: a small hand-written table (NOT exhaustive, culinary notes are
+# general and were not tested in real recipes). The LLM only chooses among these
+# candidates; the code removes anything that conflicts with the user's allergies.
+# --------------------------------------------------------------------------- #
+_SUB_IGNORE = frozenset(
+    {
+        "reduced", "sodium", "low", "fat", "free", "plain", "unsweetened", "pure",
+        "light", "clove", "granulated", "yellow",
+    }
+)
+
+
+def _sub_key(text: str) -> frozenset:
+    return normalize(text) - _SUB_IGNORE
+
+
+_CREAM_SUBS = [
+    ("coconut milk", "richer texture with a slight coconut flavor"),
+    ("yogurt", "thicker and tangy; stir it in off the heat so it does not curdle"),
+    ("milk", "thinner result; simmer to reduce if you need it thicker"),
+]
+_BROTH_SUBS = [
+    ("vegetable broth", "same use; milder flavor"),
+    ("water", "add a bit more salt and seasoning"),
+]
+_WINE_SUBS = [
+    ("chicken broth", "add a splash of lemon juice or vinegar for acidity"),
+]
+
+_RAW_SUBSTITUTIONS = {
+    "butter": [
+        ("olive oil", "works for cooking and baking; the flavor is different"),
+        ("vegetable oil", "works for cooking and baking; the flavor is milder"),
+        ("margarine", "usually a direct swap"),
+    ],
+    "milk": [
+        ("almond milk", "similar texture; unsweetened works best in savory dishes"),
+        ("oat milk", "creamy; fine for most recipes"),
+        ("soy milk", "closest in protein; fine for most recipes"),
+        ("water", "only when the recipe needs a little liquid; the result is less rich"),
+    ],
+    "heavy cream": _CREAM_SUBS,
+    "cream": _CREAM_SUBS,
+    "whipping cream": _CREAM_SUBS,
+    "heavy whipping cream": _CREAM_SUBS,
+    "buttermilk": [
+        ("yogurt", "thin it with a little milk or water"),
+        ("milk", "add a spoonful of lemon juice or vinegar and let it sit a few minutes"),
+    ],
+    "sour cream": [("yogurt", "the closest swap; slightly more tangy")],
+    "egg": [
+        ("banana", "mashed; for sweet baking such as cakes and muffins"),
+        ("applesauce", "unsweetened; for sweet baking such as cakes and muffins"),
+    ],
+    "garlic": [("garlic powder", "use much less than fresh garlic")],
+    "onion": [
+        ("shallot", "milder and slightly sweeter"),
+        ("scallion", "milder; use the white and green parts"),
+        ("onion powder", "use much less than fresh onion"),
+    ],
+    "lemon juice": [
+        ("lime juice", "same acidity, slightly different flavor"),
+        ("white vinegar", "sharper; use less"),
+    ],
+    "lime juice": [("lemon juice", "same acidity, slightly different flavor")],
+    "honey": [
+        ("maple syrup", "similar sweetness"),
+        ("sugar", "dissolve it in a little warm water first"),
+    ],
+    "brown sugar": [("sugar", "slightly less depth of flavor")],
+    "sugar": [("honey", "sweeter and liquid; reduce other liquids a little")],
+    "soy sauce": [
+        ("coconut aminos", "slightly sweeter; soy-free and gluten-free"),
+        ("tamari", "similar flavor; check the label if you avoid gluten"),
+    ],
+    "chicken broth": _BROTH_SUBS,
+    "chicken stock": _BROTH_SUBS,
+    "baking powder": [
+        ("baking soda", "not a direct swap: use less, plus a little lemon juice or vinegar"),
+    ],
+    "cornstarch": [
+        ("flour", "use about twice as much to thicken"),
+        ("potato starch", "use the same amount to thicken"),
+    ],
+    "tomato paste": [("tomato sauce", "use more and simmer to thicken")],
+    "basil": [("oregano", "different flavor; use a little less")],
+    "thyme": [
+        ("oregano", "use a little less"),
+        ("marjoram", "similar and slightly sweeter"),
+    ],
+    "rosemary": [("thyme", "milder")],
+    "parsley": [("cilantro", "different flavor")],
+    "cilantro": [("parsley", "milder and less citrusy")],
+    "dry white wine": _WINE_SUBS,
+    "white wine": _WINE_SUBS,
+}
+
+SUBSTITUTIONS = {_sub_key(k): v for k, v in _RAW_SUBSTITUTIONS.items()}
+
+# Plant milks are fine for a dairy allergy (but still checked for nut / soy allergies).
+_PLANT_MILKS = {
+    normalize(m) for m in ("almond milk", "oat milk", "soy milk", "coconut milk", "rice milk")
+}
+_DAIRY_WORDS = frozenset({"milk", "dairy", "lactose"})
+
+# Substitutes that may contain an allergen the word lists cannot see.
+_HIDDEN_RISK = {
+    normalize("margarine"): {"milk", "dairy", "lactose"},
+    normalize("oat milk"): {"gluten", "wheat"},
+    normalize("tamari"): {"gluten", "wheat"},
+}
+
+
+def _substitute_blocked(name: str, exclude) -> bool:
+    """True if this substitute conflicts with something the user must avoid."""
+    if not exclude:
+        return False
+    norm = normalize(name)
+    risk = _HIDDEN_RISK.get(norm, set())
+    effective = []
+    for item in exclude:
+        target = normalize(item)
+        if not target:
+            continue
+        if target & risk:
+            return True
+        if norm in _PLANT_MILKS and target <= _DAIRY_WORDS:
+            continue  # plant milk is not dairy
+        effective.append(item)
+    return _is_excluded(name, [name], effective)
+
+
+def substitute_candidates(missing_item, user_ingredients, exclude=None) -> list:
+    """Allowed substitutes for one missing ingredient (empty if the table has none)."""
+    user = [normalize(u) for u in user_ingredients]
+    out = []
+    for name, note in SUBSTITUTIONS.get(_sub_key(missing_item), []):
+        if _substitute_blocked(name, exclude):
+            continue
+        norm = normalize(name)
+        user_match = any(_matches(u, norm) for u in user)
+        out.append(
+            {
+                "substitute": name,
+                "note": note,
+                "user_has": user_match or norm in _PANTRY,
+                "_user_match": user_match,
+            }
+        )
+    out.sort(key=lambda c: not c["_user_match"])  # stable: what you own comes first
+    for c in out:
+        c.pop("_user_match")
+    return out
 
 
 def find_recipes(
