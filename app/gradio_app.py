@@ -16,6 +16,9 @@ DESCRIPTION = """
 اكتبي المكونات اللي عندك (بالعربي أو بالإنجليزي) ويمكن تضيفي وقت أو حساسية.
 Tell me what ingredients you have, optionally a time limit or an allergy.
 
+لو عايزة أفتكر حساسيتك للمرات الجاية قولي: "افتكري إني عندي حساسية من ..." (ولمسحها: "انسي الحساسيات").
+To save an allergy say: "remember that I'm allergic to ..." (to clear: "forget my allergies").
+
 **تنبيه / Note:** فلتر الحساسية بيعتمد على أسماء المكونات وخطوات الوصفة فقط،
 راجعي ملصقات المنتجات دايماً. The allergy filter checks ingredient names and recipe
 steps only; always check product labels. Times and nutrition values come from the
@@ -48,11 +51,15 @@ def _is_busy(text: str) -> bool:
     return any(key in text for key in ("503", "504", "UNAVAILABLE", "DEADLINE_EXCEEDED"))
 
 
-def respond(message, history):
-    """Each message is handled on its own (the chat history is not used)."""
+def respond(message, history, request: gr.Request):
+    """Each message is handled on its own; saved allergies come from the memory file.
+
+    Without a login, everyone who opens the app shares the "default" profile.
+    """
+    user_id = getattr(request, "username", None) or "default"
     for attempt in range(2):
         try:
-            return graph.answer(message)
+            return graph.answer(message, user_id=user_id)
         except Exception as exc:
             text = str(exc)
             if _is_quota(text):
