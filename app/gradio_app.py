@@ -1,5 +1,6 @@
 """Gradio chat UI for the Recipe Agent (Arabic / English)."""
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,16 +34,36 @@ QUOTA_MESSAGE = (
     "The free API quota is exhausted for now. Please try again later."
 )
 
+BUSY_MESSAGE = (
+    "السيرفر مشغول دلوقتي. جرّبي تاني بعد دقيقة.\n\n"
+    "The model server is busy right now. Please try again in a minute."
+)
+
+
+def _is_quota(text: str) -> bool:
+    return "429" in text or "RESOURCE_EXHAUSTED" in text
+
+
+def _is_busy(text: str) -> bool:
+    return any(key in text for key in ("503", "504", "UNAVAILABLE", "DEADLINE_EXCEEDED"))
+
 
 def respond(message, history):
     """Each message is handled on its own (the chat history is not used)."""
-    try:
-        return graph.answer(message)
-    except Exception as exc:
-        text = str(exc)
-        if "429" in text or "RESOURCE_EXHAUSTED" in text:
-            return QUOTA_MESSAGE
-        return f"حصلت مشكلة غير متوقعة / Unexpected error: {type(exc).__name__}"
+    for attempt in range(2):
+        try:
+            return graph.answer(message)
+        except Exception as exc:
+            text = str(exc)
+            if _is_quota(text):
+                return QUOTA_MESSAGE
+            if _is_busy(text):
+                if attempt == 0:
+                    time.sleep(5)  # one retry only: every retry may use free-tier quota
+                    continue
+                return BUSY_MESSAGE
+            return f"حصلت مشكلة غير متوقعة / Unexpected error: {type(exc).__name__}"
+    return BUSY_MESSAGE
 
 
 demo = gr.ChatInterface(
