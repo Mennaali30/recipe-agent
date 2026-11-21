@@ -1,11 +1,14 @@
-"""LangGraph workflow: parse -> search (widen once if few results) -> respond."""
+"""LangGraph workflow: parse -> search (widen once if few results) -> substitute -> respond."""
+import logging
 from functools import lru_cache
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from recipe_agent import tools
-from recipe_agent.agents import parse_request, write_answer
+from recipe_agent.agents import parse_request, plan_substitutions, write_answer
+
+log = logging.getLogger(__name__)
 
 TOP_K = 3
 CANDIDATES = (40, 200)  # first search, then one wider retry
@@ -41,6 +44,26 @@ def search_node(state: GraphState) -> dict:
     return {"recipes": found, "shopping": shopping, "attempt": attempt + 1}
 
 
+def substitute_node(state: GraphState) -> dict:
+    """Optional step: if it fails (busy server, quota), the answer is written without it."""
+    try:
+        plan = plan_substitutions(state["request"], state["recipes"])
+    except Exception as exc:
+        log.warning("substitution step skipped: %s", type(exc).__name__)
+        plan = []
+    by_recipe = {}
+    for item in plan:
+        by_recipe.setdefault(item["recipe_id"], []).append(
+            {k: v for k, v in item.items() if k != "recipe_id"}
+        )
+    recipes = []
+    for recipe in state["recipes"]:
+        recipe = dict(recipe)
+        recipe["substitutions"] = by_recipe.get(recipe["recipe_id"], [])
+        recipes.append(recipe)
+    return {"recipes": recipes}
+
+
 def clarify_node(state: GraphState) -> dict:
     if state["request"].language == "ar":
         msg = "ممكن تقوليلي إيه المكونات اللي عندك؟ مثلاً: فراخ، أرز، طماطم."
@@ -60,7 +83,7 @@ def after_parse(state: GraphState) -> str:
 def after_search(state: GraphState) -> str:
     if len(state["recipes"]) < MIN_RESULTS and state["attempt"] < len(CANDIDATES):
         return "search"
-    return "respond"
+    return "substitute"
 
 
 @lru_cache(maxsize=1)
@@ -68,12 +91,16 @@ def build_graph():
     graph = StateGraph(GraphState)
     graph.add_node("parse", parse_node)
     graph.add_node("search", search_node)
+    graph.add_node("substitute", substitute_node)
     graph.add_node("clarify", clarify_node)
     graph.add_node("respond", respond_node)
 
     graph.add_edge(START, "parse")
     graph.add_conditional_edges("parse", after_parse, {"search": "search", "clarify": "clarify"})
-    graph.add_conditional_edges("search", after_search, {"search": "search", "respond": "respond"})
+    graph.add_conditional_edges(
+        "search", after_search, {"search": "search", "substitute": "substitute"}
+    )
+    graph.add_edge("substitute", "respond")
     graph.add_edge("respond", END)
     graph.add_edge("clarify", END)
     return graph.compile()
