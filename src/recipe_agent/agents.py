@@ -1,10 +1,16 @@
 """LLM-powered agents. Each agent does one job and returns structured data."""
 import json
+import logging
 
 from recipe_agent import tools
 from recipe_agent.config import get_llm_chain
-from recipe_agent.schemas import SubstitutionPlan, UserRequest
+from recipe_agent.schemas import MealPlan, SubstitutionPlan, UserRequest
 from recipe_agent.utils import message_text
+
+log = logging.getLogger(__name__)
+
+MAX_MEALS = 5
+MAX_QUESTION_CHARS = 300
 
 INTENT_PROMPT = """You extract a cooking request from the user's message. The message may be in
 Arabic (including Egyptian dialect) or English.
@@ -25,6 +31,9 @@ Rules:
   حساسية من اللبن"). Merely mentioning an allergy is NOT a request to remember: use false.
 - forget_memory: true ONLY if the user explicitly asks to forget or clear saved allergies or
   preferences (for example "forget my allergies", "انسي الحساسيات اللي حفظتيها").
+- meals: a number (2 to 7) ONLY if the user explicitly asks for several meals or a plan for
+  several days (for example "وجبات لـ 3 أيام" = 3, "plan dinners for the week" = 7). For a
+  single dish or one meal use null.
 - clarifying_question: ONLY when the user gave NO ingredients they have. Then write ONE short
   reply (at most two sentences) in the user's language that asks which ingredients they have.
   Tailor it to what they said: if they mention a kind of food or a diet (light, vegetarian,
@@ -33,8 +42,6 @@ Rules:
   from the ingredients they have, then ask for them. Do not suggest any recipe and do not give
   health or allergy advice. If the user gave ingredients, use null.
 - Never invent ingredients or constraints the user did not mention."""
-
-MAX_QUESTION_CHARS = 300
 
 
 def _clean_list(items) -> list:
@@ -55,6 +62,8 @@ def parse_request(text: str, llm=None) -> UserRequest:
     req.exclude_ingredients = _clean_list(req.exclude_ingredients)
     if req.max_minutes is not None and req.max_minutes <= 0:
         req.max_minutes = None
+    if req.meals is not None and req.meals < 2:
+        req.meals = None
     # The clarifying question is only kept when there are no ingredients and it looks sane.
     question = (req.clarifying_question or "").strip()
     if req.ingredients or len(question) < 5 or len(question) > MAX_QUESTION_CHARS:
@@ -132,6 +141,88 @@ def plan_substitutions(request: UserRequest, recipes: list, llm=None) -> list:
     return result
 
 
+PLAN_PROMPT = """You build a short, varied meal plan from a shortlist of recipes.
+
+You receive JSON with "meals" (how many recipes to choose) and "shortlist" (recipes already
+checked for the user's allergies, best match first). Each one has recipe_id, name, category,
+total_minutes, calories, used (how many of the user's ingredients it uses) and missing_count.
+
+- Choose exactly "meals" DIFFERENT recipes from the shortlist.
+- Prefer variety: different categories and different main ingredients.
+- Prefer recipes that use more of the user's ingredients and have fewer missing items.
+- Put them in a sensible order for the days (for example a lighter meal after a heavy one).
+- Copy recipe_id exactly as it appears in the input. Never invent an id."""
+
+
+def _pick_varied(candidates, n, already=()):
+    """Simple deterministic choice: best ranked first, different categories before repeats.
+
+    `candidates` are already ranked. Returns a list of recipe_ids (at most n).
+    """
+    chosen = list(already)
+    by_id = {r["recipe_id"]: r for r in candidates}
+    used_categories = {by_id[i]["category"] for i in chosen if i in by_id}
+    for r in candidates:
+        if len(chosen) >= n:
+            break
+        if r["recipe_id"] not in chosen and r["category"] not in used_categories:
+            chosen.append(r["recipe_id"])
+            used_categories.add(r["category"])
+    for r in candidates:
+        if len(chosen) >= n:
+            break
+        if r["recipe_id"] not in chosen:
+            chosen.append(r["recipe_id"])
+    return chosen
+
+
+def plan_meals(shortlist: list, n: int, llm=None):
+    """Meal-planner agent: choose and order n recipes from a code-built shortlist.
+
+    The LLM picks and orders; code drops invented or repeated ids and fills any gap with a
+    simple varied choice. If the LLM fails, the plan is built by code alone.
+    Returns (recipes_in_day_order, source) where source is "llm", "llm+code", "code" or "all"
+    ("all": the shortlist was not bigger than n, so there was nothing to choose).
+    """
+    if len(shortlist) <= n:
+        return list(shortlist), "all"
+
+    by_id = {r["recipe_id"]: r for r in shortlist}
+    chosen = []
+    try:
+        llm = llm or get_llm_chain(temperature=0, schema=MealPlan)
+        items = [
+            {
+                "recipe_id": r["recipe_id"],
+                "name": r["name"],
+                "category": r["category"],
+                "total_minutes": r["total_minutes"],
+                "calories": r["nutrition"]["calories"],
+                "used": r["used"],
+                "missing_count": len(r["missing"]),
+            }
+            for r in shortlist
+        ]
+        plan = llm.invoke(
+            [
+                ("system", PLAN_PROMPT),
+                ("human", json.dumps({"meals": n, "shortlist": items}, ensure_ascii=False)),
+            ]
+        )
+        for rid in plan.recipe_ids:
+            if rid in by_id and rid not in chosen:
+                chosen.append(rid)
+            if len(chosen) == n:
+                break
+    except Exception as exc:
+        log.warning("meal planner LLM step failed, using the simple choice: %s", type(exc).__name__)
+
+    from_llm = len(chosen)
+    chosen = _pick_varied(shortlist, n, already=chosen)
+    source = "llm" if from_llm == n else "llm+code" if from_llm else "code"
+    return [by_id[i] for i in chosen], source
+
+
 RESPONSE_PROMPT = """You write the final answer of a recipe assistant, using ONLY the JSON data you receive.
 
 Rules:
@@ -148,6 +239,12 @@ Rules:
 - Arabic food words, use exactly these: shortening (Crisco) = دهن نباتي (shortening), NEVER سمن
   (سمن means ghee, a dairy product); sour cream = كريمة حامضة (sour cream); baking powder = بيكنج
   بودر; flour = دقيق; butter = زبدة; margarine = مارجرين.
+- If "plan" is not null, this is a meal plan: start with one short line saying how many meals were
+  planned (plan.planned), and put each recipe under its day using the recipe's "day" (Arabic:
+  اليوم N, English: Day N). If plan.requested is larger than plan.planned, say that fewer
+  matching recipes were found or that the maximum is 5 meals. Add one line saying the dataset has
+  no ingredient quantities, so the user should check that what they have is enough for all the
+  meals. The shopping list covers all the meals together.
 - If a recipe has a non-empty "substitutions" list, add under it a short section (Arabic: بدائل
   ممكنة, English: Possible substitutions). For each item write: the missing ingredient, the
   substitute, and the note translated faithfully. If "user_has" is true, say the user already has
@@ -174,6 +271,7 @@ def write_answer(
     shopping: list,
     saved_exclusions=None,
     memory_event=None,
+    plan=None,
 ) -> str:
     """Response agent: structured results -> final answer in the user's language."""
     payload = {
@@ -182,6 +280,7 @@ def write_answer(
         "shopping_list": shopping,
         "saved_allergies_applied": list(saved_exclusions or []),
         "memory_event": memory_event,
+        "plan": plan,
     }
     llm = get_llm_chain(temperature=0.3)
     message = llm.invoke(
