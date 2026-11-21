@@ -221,6 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+data/memory/
 # Project specific
 data/raw/
 data/processed/
