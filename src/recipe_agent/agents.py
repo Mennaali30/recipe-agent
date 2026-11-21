@@ -20,6 +20,11 @@ Rules:
 - max_minutes: a time limit in minutes only if the user mentions one (convert hours to minutes).
   Otherwise null.
 - language: "ar" if the user wrote in Arabic, otherwise "en".
+- remember: true ONLY if the user explicitly asks to remember or save their allergies / avoided
+  ingredients for next time (for example "remember that I'm allergic to nuts", "افتكري إني عندي
+  حساسية من اللبن"). Merely mentioning an allergy is NOT a request to remember: use false.
+- forget_memory: true ONLY if the user explicitly asks to forget or clear saved allergies or
+  preferences (for example "forget my allergies", "انسي الحساسيات اللي حفظتيها").
 - Never invent ingredients or constraints the user did not mention."""
 
 
@@ -137,6 +142,10 @@ Rules:
 - If "missing" is empty, say the user has everything they need.
 - If request.exclude_ingredients is not empty, add one short note that the filtering is based on
   ingredient names and recipe steps only and the user must double-check labels for allergies.
+- If "saved_allergies_applied" is not empty, say in one short line that the saved allergies
+  (list them) were applied, and that the user can ask to forget them.
+- If "memory_event" is "saved", say the allergies were saved for next time. If it is "forgotten",
+  say the saved allergies were cleared.
 - If "recipes" is empty, say no matching recipes were found and suggest adding more ingredients or
   allowing more time. Do not invent a recipe.
 - End with a combined shopping list if "shopping_list" is not empty.
@@ -145,12 +154,20 @@ Rules:
 - Use short markdown: a heading per recipe and numbered steps. No long introductions."""
 
 
-def write_answer(request: UserRequest, recipes: list, shopping: list) -> str:
+def write_answer(
+    request: UserRequest,
+    recipes: list,
+    shopping: list,
+    saved_exclusions=None,
+    memory_event=None,
+) -> str:
     """Response agent: structured results -> final answer in the user's language."""
     payload = {
         "request": request.model_dump(),
         "recipes": recipes,
         "shopping_list": shopping,
+        "saved_allergies_applied": list(saved_exclusions or []),
+        "memory_event": memory_event,
     }
     llm = get_llm_chain(temperature=0.3)
     message = llm.invoke(
