@@ -1,11 +1,13 @@
-"""LangGraph workflow: parse -> search (widen once if few results) -> substitute -> respond."""
+"""LangGraph workflow:
+parse -> memory -> search (widen once if few results) -> substitute -> respond.
+"""
 import logging
 from functools import lru_cache
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from recipe_agent import tools
+from recipe_agent import memory, tools
 from recipe_agent.agents import parse_request, plan_substitutions, write_answer
 
 log = logging.getLogger(__name__)
@@ -17,7 +19,10 @@ MIN_RESULTS = 2
 
 class GraphState(TypedDict, total=False):
     text: str
+    user_id: str
     request: object  # UserRequest
+    saved_exclusions: list
+    memory_event: str
     recipes: list
     shopping: list
     attempt: int
@@ -26,6 +31,24 @@ class GraphState(TypedDict, total=False):
 
 def parse_node(state: GraphState) -> dict:
     return {"request": parse_request(state["text"]), "attempt": 0}
+
+
+def memory_node(state: GraphState) -> dict:
+    """Code only (no LLM): save / forget when asked, then add saved allergies to this request."""
+    req = state["request"]
+    uid = state.get("user_id") or "default"
+    event = None
+    if req.forget_memory:
+        memory.forget(uid)
+        saved = []
+        event = "forgotten"
+    elif req.remember and req.exclude_ingredients:
+        saved = memory.remember_exclusions(uid, req.exclude_ingredients)
+        event = "saved"
+    else:
+        saved = memory.get_exclusions(uid)
+    req.exclude_ingredients = list(dict.fromkeys([*req.exclude_ingredients, *saved]))
+    return {"request": req, "saved_exclusions": saved, "memory_event": event}
 
 
 def search_node(state: GraphState) -> dict:
@@ -65,18 +88,43 @@ def substitute_node(state: GraphState) -> dict:
 
 
 def clarify_node(state: GraphState) -> dict:
-    if state["request"].language == "ar":
-        msg = "ممكن تقوليلي إيه المكونات اللي عندك؟ مثلاً: فراخ، أرز، طماطم."
-    else:
-        msg = "Which ingredients do you have? For example: chicken, rice, tomatoes."
-    return {"answer": msg}
+    """No ingredients in the message: confirm any memory change and ask for ingredients (no LLM)."""
+    ar = state["request"].language == "ar"
+    saved = ", ".join(state.get("saved_exclusions") or [])
+    event = state.get("memory_event")
+    parts = []
+    if event == "saved":
+        parts.append(
+            f"تمام، هفتكر إنك بتتجنبي: {saved}." if ar
+            else f"Done, I will remember that you avoid: {saved}."
+        )
+    elif event == "forgotten":
+        parts.append("تمام، مسحت الحساسيات المحفوظة." if ar else "Done, I cleared your saved allergies.")
+    elif saved:
+        parts.append(
+            f"الحساسيات المحفوظة اللي هتتطبق: {saved}." if ar
+            else f"Saved allergies that will be applied: {saved}."
+        )
+    parts.append(
+        "ممكن تقوليلي إيه المكونات اللي عندك؟ مثلاً: فراخ، أرز، طماطم." if ar
+        else "Which ingredients do you have? For example: chicken, rice, tomatoes."
+    )
+    return {"answer": "\n\n".join(parts)}
 
 
 def respond_node(state: GraphState) -> dict:
-    return {"answer": write_answer(state["request"], state["recipes"], state["shopping"])}
+    return {
+        "answer": write_answer(
+            state["request"],
+            state["recipes"],
+            state["shopping"],
+            saved_exclusions=state.get("saved_exclusions"),
+            memory_event=state.get("memory_event"),
+        )
+    }
 
 
-def after_parse(state: GraphState) -> str:
+def after_memory(state: GraphState) -> str:
     return "search" if state["request"].ingredients else "clarify"
 
 
@@ -90,13 +138,15 @@ def after_search(state: GraphState) -> str:
 def build_graph():
     graph = StateGraph(GraphState)
     graph.add_node("parse", parse_node)
+    graph.add_node("memory", memory_node)
     graph.add_node("search", search_node)
     graph.add_node("substitute", substitute_node)
     graph.add_node("clarify", clarify_node)
     graph.add_node("respond", respond_node)
 
     graph.add_edge(START, "parse")
-    graph.add_conditional_edges("parse", after_parse, {"search": "search", "clarify": "clarify"})
+    graph.add_edge("parse", "memory")
+    graph.add_conditional_edges("memory", after_memory, {"search": "search", "clarify": "clarify"})
     graph.add_conditional_edges(
         "search", after_search, {"search": "search", "substitute": "substitute"}
     )
@@ -106,10 +156,10 @@ def build_graph():
     return graph.compile()
 
 
-def run_agent(text: str) -> dict:
+def run_agent(text: str, user_id: str = "default") -> dict:
     """Run the whole workflow and return the final state (request, recipes, answer, ...)."""
-    return build_graph().invoke({"text": text})
+    return build_graph().invoke({"text": text, "user_id": user_id})
 
 
-def answer(text: str) -> str:
-    return run_agent(text)["answer"]
+def answer(text: str, user_id: str = "default") -> str:
+    return run_agent(text, user_id)["answer"]
