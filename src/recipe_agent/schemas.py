@@ -23,3 +23,17 @@ class UserRequest(BaseModel):
         default="en",
         description="Language the user wrote in: 'ar' for Arabic, 'en' for English.",
     )
+
+
+class SubstitutionChoice(BaseModel):
+    """One chosen substitute for one missing ingredient of one recipe."""
+
+    recipe_id: int = Field(description="recipe_id copied exactly from the input.")
+    missing: str = Field(description="The missing ingredient, copied exactly from the input.")
+    substitute: str = Field(description="One candidate substitute, copied exactly from the candidates.")
+
+
+class SubstitutionPlan(BaseModel):
+    """All substitutions chosen for the recipes (empty if none is sensible)."""
+
+    choices: list[SubstitutionChoice] = Field(default_factory=list)
