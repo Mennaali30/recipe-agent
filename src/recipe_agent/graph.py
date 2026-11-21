@@ -1,5 +1,5 @@
 """LangGraph workflow:
-parse -> memory -> search (widen once if few results) -> substitute -> respond.
+parse -> memory -> (clarify | search (widen once if few results) -> substitute -> respond).
 """
 import logging
 from functools import lru_cache
@@ -87,9 +87,19 @@ def substitute_node(state: GraphState) -> dict:
     return {"recipes": recipes}
 
 
+def _only_pantry(ingredients) -> bool:
+    """True if every ingredient is something we assume everyone has (salt, water, oil...)."""
+    norms = [tools.normalize(i) for i in ingredients]
+    return bool(norms) and all(n in tools._PANTRY for n in norms)
+
+
 def clarify_node(state: GraphState) -> dict:
-    """No ingredients in the message: confirm any memory change and ask for ingredients (no LLM)."""
-    ar = state["request"].language == "ar"
+    """The request is too thin to search: confirm any memory change and ask for ingredients.
+
+    No extra LLM call: the question was written by the intent agent in the same call.
+    """
+    req = state["request"]
+    ar = req.language == "ar"
     saved = ", ".join(state.get("saved_exclusions") or [])
     event = state.get("memory_event")
     parts = []
@@ -105,10 +115,19 @@ def clarify_node(state: GraphState) -> dict:
             f"الحساسيات المحفوظة اللي هتتطبق: {saved}." if ar
             else f"Saved allergies that will be applied: {saved}."
         )
-    parts.append(
-        "ممكن تقوليلي إيه المكونات اللي عندك؟ مثلاً: فراخ، أرز، طماطم." if ar
-        else "Which ingredients do you have? For example: chicken, rice, tomatoes."
-    )
+
+    if req.ingredients:  # only salt / water / oil, which we assume everyone has
+        parts.append(
+            "الملح والميّة والزيت بفترض إنهم موجودين عندك دايماً. إيه المكونات التانية اللي عندك؟" if ar
+            else "I assume you always have salt, water and oil. Which other ingredients do you have?"
+        )
+    elif req.clarifying_question:
+        parts.append(req.clarifying_question)
+    else:
+        parts.append(
+            "ممكن تقوليلي إيه المكونات اللي عندك؟ مثلاً: فراخ، أرز، طماطم." if ar
+            else "Which ingredients do you have? For example: chicken, rice, tomatoes."
+        )
     return {"answer": "\n\n".join(parts)}
 
 
@@ -125,7 +144,10 @@ def respond_node(state: GraphState) -> dict:
 
 
 def after_memory(state: GraphState) -> str:
-    return "search" if state["request"].ingredients else "clarify"
+    ingredients = state["request"].ingredients
+    if not ingredients or _only_pantry(ingredients):
+        return "clarify"
+    return "search"
 
 
 def after_search(state: GraphState) -> str:
