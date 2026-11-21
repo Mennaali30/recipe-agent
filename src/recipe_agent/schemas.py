@@ -37,6 +37,13 @@ class UserRequest(BaseModel):
             "preferences (e.g. 'forget my allergies', 'انسي الحساسيات')."
         ),
     )
+    meals: Optional[int] = Field(
+        default=None,
+        description=(
+            "How many separate meals / days the user wants planned (for example 'meals for 3 "
+            "days' = 3). null for a normal single-recipe request."
+        ),
+    )
     clarifying_question: Optional[str] = Field(
         default=None,
         description=(
@@ -58,3 +65,12 @@ class SubstitutionPlan(BaseModel):
     """All substitutions chosen for the recipes (empty if none is sensible)."""
 
     choices: list[SubstitutionChoice] = Field(default_factory=list)
+
+
+class MealPlan(BaseModel):
+    """Recipes chosen for a multi-day meal plan, in the order of the days."""
+
+    recipe_ids: list[int] = Field(
+        default_factory=list,
+        description="recipe_id values chosen from the shortlist, copied exactly, one per day.",
+    )
