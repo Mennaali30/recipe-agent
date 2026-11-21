@@ -37,6 +37,13 @@ class UserRequest(BaseModel):
             "preferences (e.g. 'forget my allergies', 'انسي الحساسيات')."
         ),
     )
+    clarifying_question: Optional[str] = Field(
+        default=None,
+        description=(
+            "ONLY when the user gave no ingredients they have: one short reply in the user's "
+            "language that asks which ingredients they have. Otherwise null."
+        ),
+    )
 
 
 class SubstitutionChoice(BaseModel):
