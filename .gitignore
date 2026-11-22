@@ -226,3 +226,4 @@ data/memory/
 data/raw/
 data/processed/
 chroma_db/
+data/cache/
