@@ -10,7 +10,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from recipe_agent import memory, tools, verifier
+from recipe_agent import cache, memory, tools, verifier
 from recipe_agent.agents import (
     MAX_MEALS,
     parse_request,
@@ -294,5 +294,20 @@ def run_agent(text: str, user_id: str = "default") -> dict:
     return build_graph().invoke({"text": text, "user_id": user_id})
 
 
-def answer(text: str, user_id: str = "default") -> str:
-    return run_agent(text, user_id)["answer"]
+def _cacheable(out: dict) -> bool:
+    """Only plain successful answers are stored: not errors or plain fallbacks, not memory
+    actions (they must run again to take effect), not clarification questions."""
+    return bool(out.get("recipes")) and not out.get("fallback") and not out.get("memory_event")
+
+
+def answer(text: str, user_id: str = "default", use_cache: bool = True) -> str:
+    """Final answer for a message. A repeated request is served from the cache (no LLM call)."""
+    exclusions = memory.get_exclusions(user_id)
+    if use_cache:
+        hit = cache.get(text, exclusions)
+        if hit:
+            return hit
+    out = run_agent(text, user_id)
+    if use_cache and _cacheable(out):
+        cache.put(text, exclusions, out["answer"])
+    return out["answer"]
