@@ -10,6 +10,29 @@ _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "0123
 # appear there (for example "saved allergies applied: milk").
 _NOTE_MARKERS = ("allerg", "حساس")
 
+ALLERGEN_AR = {
+    "milk": "اللبن",
+    "dairy": "الألبان",
+    "lactose": "اللاكتوز",
+    "egg": "البيض",
+    "peanut": "الفول السوداني",
+    "nut": "المكسرات",
+    "wheat": "القمح",
+    "gluten": "الجلوتين",
+    "soy": "الصويا",
+    "fish": "السمك",
+    "shellfish": "المحار والجمبري",
+    "sesame": "السمسم",
+}
+
+
+def format_items(items, language="en") -> str:
+    """Readable list of avoided ingredients (allergen words shown in Arabic for Arabic users)."""
+    items = [str(i) for i in items]
+    if language == "ar":
+        return "، ".join(ALLERGEN_AR.get(i.strip().lower(), i) for i in items)
+    return ", ".join(items)
+
 
 def verify_recipes(request, recipes):
     """Re-check the final recipes (and their substitutes) against the user's allergies.
@@ -150,7 +173,7 @@ def fallback_answer(
         lines.extend(f"- {item}" for item in shopping)
         lines.append("")
     if saved_exclusions:
-        lines.append(t["saved"].format(items=", ".join(saved_exclusions)))
+        lines.append(t["saved"].format(items=format_items(saved_exclusions, request.language)))
     if request.exclude_ingredients:
         lines.append(t["allergy"])
     lines.append(t["footer"])
