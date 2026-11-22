@@ -150,23 +150,31 @@ def clarify_node(state: GraphState) -> dict:
     """The request is too thin to search: confirm any memory change and ask for ingredients.
 
     No extra LLM call: the question was written by the intent agent in the same call.
+    When this node confirms a memory change itself, the fixed question is used instead,
+    so the confirmation is never duplicated or claimed without being true.
     """
     req = state["request"]
     ar = req.language == "ar"
-    saved = ", ".join(state.get("saved_exclusions") or [])
+    saved_items = verifier.format_items(state.get("saved_exclusions") or [], req.language)
     event = state.get("memory_event")
     parts = []
     if event == "saved":
         parts.append(
-            f"تمام، هفتكر إنك بتتجنبي: {saved}." if ar
-            else f"Done, I will remember that you avoid: {saved}."
+            f"تمام، هفتكر إنك بتتجنبي: {saved_items}." if ar
+            else f"Done, I will remember that you avoid: {saved_items}."
         )
     elif event == "forgotten":
         parts.append("تمام، مسحت الحساسيات المحفوظة." if ar else "Done, I cleared your saved allergies.")
-    elif saved:
+    elif req.remember:  # asked to remember, but there was nothing to save
         parts.append(
-            f"الحساسيات المحفوظة اللي هتتطبق: {saved}." if ar
-            else f"Saved allergies that will be applied: {saved}."
+            "مقدرتش أحدد إيه اللي أحفظه. قوليلي الحساسية بالاسم، مثلاً: افتكري إني عندي حساسية من اللبن."
+            if ar
+            else "I could not tell what to save. Tell me the allergy by name, for example: remember that I'm allergic to milk."
+        )
+    elif saved_items:
+        parts.append(
+            f"الحساسيات المحفوظة اللي هتتطبق: {saved_items}." if ar
+            else f"Saved allergies that will be applied: {saved_items}."
         )
 
     if req.ingredients:  # only salt / water / oil, which we assume everyone has
@@ -174,7 +182,7 @@ def clarify_node(state: GraphState) -> dict:
             "الملح والميّة والزيت بفترض إنهم موجودين عندك دايماً. إيه المكونات التانية اللي عندك؟" if ar
             else "I assume you always have salt, water and oil. Which other ingredients do you have?"
         )
-    elif req.clarifying_question:
+    elif req.clarifying_question and not event and not req.remember:
         parts.append(req.clarifying_question)
     else:
         parts.append(
