@@ -20,9 +20,10 @@ Tell me what ingredients you have, optionally a time limit or an allergy.
 To save an allergy say: "remember that I'm allergic to ..." (to clear: "forget my allergies").
 
 **تنبيه / Note:** فلتر الحساسية بيعتمد على أسماء المكونات وخطوات الوصفة فقط،
-راجعي ملصقات المنتجات دايماً. The allergy filter checks ingredient names and recipe
-steps only; always check product labels. Times and nutrition values come from the
-recipe dataset and are approximate.
+راجعي ملصقات المنتجات دايماً. قوايم المكونات في الداتا ممكن تبقى ناقصة أحياناً،
+فاقري الخطوات كويس. The allergy filter checks ingredient names and recipe steps only;
+always check product labels. Ingredient lists in the dataset can be incomplete, so read
+the steps too. Times and nutrition values come from the recipe dataset and are approximate.
 """
 
 EXAMPLES = [
