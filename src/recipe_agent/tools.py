@@ -111,6 +111,33 @@ ALLERGEN_PHRASES = {
     "lactose": [_HALF_AND_HALF],
 }
 
+# Canned / packaged soup used as an ingredient is often dairy or wheat based (cream soups,
+# onion soup mix) but it is frequently missing from the ingredient list of the dataset.
+# This is a word-level heuristic: it ignores cookware and serving phrases ("soup pot",
+# "as a soup", "whole soup") and may still produce false alarms or miss some cases.
+_SOUP_FAMILIES = frozenset({"milk", "dairy", "lactose", "wheat", "gluten"})
+_SOUP_STRONG = re.compile(r"\bcondensed\b|\bcream of (?:\w+ ){0,2}soup\b|\bsoup mix\b")
+_SOUP_WORD = re.compile(r"\bsoup\b")
+_SOUP_NOT_AFTER = {"pot", "pots", "pan", "bowl", "bowls", "spoon", "spoons", "kettle", "ladle", "mug"}
+_SOUP_NOT_BEFORE = {"a", "as", "whole", "large", "big", "medium", "small", "for", "this", "your", "entire"}
+
+
+def _canned_soup_in_steps(texts) -> bool:
+    """True if the texts seem to use ready-made soup as an ingredient."""
+    for text in texts:
+        low = str(text).lower()
+        if _SOUP_STRONG.search(low):
+            return True
+        for m in _SOUP_WORD.finditer(low):
+            before = [re.sub(r"[^a-z]", "", w) for w in low[: m.start()].split()[-1:]]
+            after = [re.sub(r"[^a-z]", "", w) for w in low[m.end():].split()[:1]]
+            if before and before[0] in _SOUP_NOT_BEFORE:
+                continue
+            if after and after[0] in _SOUP_NOT_AFTER:
+                continue
+            return True
+    return False
+
 
 def _matches(user: frozenset, ing: frozenset) -> bool:
     """Does what the user typed cover this recipe ingredient?
@@ -181,12 +208,16 @@ def get_instructions(recipe_id) -> list:
     return [str(s) for s in get_recipe(recipe_id)["instructions"]]
 
 
-def _is_excluded(recipe_name, recipe_ingredients, exclude, instructions=None) -> bool:
+def _is_excluded(
+    recipe_name, recipe_ingredients, exclude, instructions=None, check_soup=False
+) -> bool:
     """True if the recipe's name, ingredients or steps contain an excluded ingredient.
 
     Allergen words (milk, egg, nut, wheat, ...) are expanded to their whole family,
     so 'milk' also excludes cheese, butter, cream, etc. The steps are scanned too,
     because some recipes mention an ingredient only there (e.g. 'serve with sour cream').
+    With check_soup=True (used by the recipe search), a recipe that uses ready-made soup is
+    also excluded for milk / dairy / wheat / gluten (see _canned_soup_in_steps).
     Hidden sources that are not in the lists (e.g. chocolate) are still not detected.
     """
     if not exclude:
@@ -210,6 +241,12 @@ def _is_excluded(recipe_name, recipe_ingredients, exclude, instructions=None) ->
         if family and family & step_words:
             return True
         if any(p.search(raw) for tok in target for p in ALLERGEN_PHRASES.get(tok, [])):
+            return True
+    if check_soup and not _SOUP_WORD.search(str(recipe_name).lower()):
+        wanted = set()
+        for item in exclude:
+            wanted |= set(normalize(item))
+        if wanted & _SOUP_FAMILIES and _canned_soup_in_steps(ings + steps):
             return True
     return False
 
@@ -386,7 +423,7 @@ def find_recipes(
         recipe = get_recipe(hit["recipe_id"])
         recipe_ings = list(recipe["ingredients"])
         steps = [str(s) for s in recipe["instructions"]]
-        if _is_excluded(recipe["name"], recipe_ings, exclude, steps):
+        if _is_excluded(recipe["name"], recipe_ings, exclude, steps, check_soup=True):
             continue
         used = _used_count(ingredients, recipe_ings)
         if used < min_used:
