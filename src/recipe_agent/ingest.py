@@ -7,6 +7,10 @@ from pathlib import Path
 import pandas as pd
 import pyarrow.parquet as pq
 
+# Same location the retriever reads from, whatever the current working directory is.
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_OUT = ROOT / "data" / "processed" / "recipes.parquet"
+
 COLUMNS = [
     "RecipeId", "Name", "CookTime", "PrepTime", "TotalTime", "Description",
     "RecipeCategory", "Keywords", "RecipeIngredientQuantities",
@@ -131,7 +135,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
 def run(
     raw_dir,
-    out_path="data/processed/recipes.parquet",
+    out_path=DEFAULT_OUT,
     n=20000,
     min_reviews=3,
     min_rating=4.0,
@@ -156,7 +160,7 @@ def run(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare the recipes dataset")
     parser.add_argument("--raw-dir", required=True, help="Folder containing recipes.parquet")
-    parser.add_argument("--out", default="data/processed/recipes.parquet")
+    parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--n", type=int, default=20000)
     args = parser.parse_args()
     run(args.raw_dir, args.out, args.n)
