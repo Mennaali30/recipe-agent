@@ -26,11 +26,12 @@ always check product labels. Ingredient lists in the dataset can be incomplete, 
 the steps too. Times and nutrition values come from the recipe dataset and are approximate.
 """
 
+# These three have a saved answer (examples/answers_cache.json), so they work instantly
+# and do not use the model quota.
 EXAMPLES = [
     "عندي فراخ وأرز وثوم وعايزة أكلة تخلص في نص ساعة",
     "عندي بطاطس وبيض وعندي حساسية من اللبن",
     "I have eggs, tomatoes and cheese. Under 20 minutes.",
-    "I have salmon and lemon. I'm allergic to nuts.",
 ]
 
 QUOTA_MESSAGE = (
@@ -79,6 +80,7 @@ demo = gr.ChatInterface(
     title=TITLE,
     description=DESCRIPTION,
     examples=EXAMPLES,
+    cache_examples=False,
 )
 
 if __name__ == "__main__":
