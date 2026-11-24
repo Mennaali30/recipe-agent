@@ -126,7 +126,7 @@ def substitute_node(state: GraphState) -> dict:
     try:
         plan = plan_substitutions(state["request"], state["recipes"])
     except Exception as exc:
-        log.warning("substitution step skipped: %s", type(exc).__name__)
+        log.warning("substitution step skipped: %s: %s", type(exc).__name__, exc)
         plan = []
     by_recipe = {}
     for item in plan:
@@ -222,7 +222,12 @@ def respond_node(state: GraphState) -> dict:
         )
         return {"answer": text, "fallback": None}
     except Exception as exc:
-        log.warning("response step failed, using the plain answer: %s", type(exc).__name__)
+        # Log the real error (quota, overload, key...) so it can be diagnosed,
+        # while the user still gets the plain answer.
+        log.warning(
+            "response step failed, using the plain answer: %s: %s",
+            type(exc).__name__, exc,
+        )
         return {
             "answer": verifier.fallback_answer(
                 state["request"],

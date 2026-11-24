@@ -4,6 +4,7 @@ import re
 
 from recipe_agent.allergy import EXTRA_ENGLISH_TERMS
 from recipe_agent.retriever import get_recipe, search
+from recipe_agent.utils import fahrenheit_to_celsius
 
 # Assumed to be available in any kitchen, so they are never reported as missing.
 PANTRY = {
@@ -244,8 +245,9 @@ def _used_count(user_ingredients, recipe_ingredients) -> int:
 
 
 def get_instructions(recipe_id) -> list:
-    """The recipe's steps, as plain strings."""
-    return [str(s) for s in get_recipe(recipe_id)["instructions"]]
+    """The recipe's steps, as plain strings. Fahrenheit is shown Celsius-first even when
+    the stored data was prepared before the ingest conversion ran."""
+    return [fahrenheit_to_celsius(str(s)) for s in get_recipe(recipe_id)["instructions"]]
 
 
 def _is_excluded(

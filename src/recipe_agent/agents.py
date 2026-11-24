@@ -4,6 +4,7 @@ import logging
 
 from recipe_agent import tools
 from recipe_agent.config import get_llm_chain
+from recipe_agent.llm_call import invoke_with_backoff
 from recipe_agent.schemas import MealPlan, SubstitutionPlan, UserRequest
 from recipe_agent.utils import message_text
 
@@ -57,7 +58,7 @@ def _clean_list(items) -> list:
 def parse_request(text: str, llm=None) -> UserRequest:
     """Intent agent: free text -> UserRequest (one LLM call)."""
     llm = llm or get_llm_chain(temperature=0, schema=UserRequest)
-    req = llm.invoke([("system", INTENT_PROMPT), ("human", text)])
+    req = invoke_with_backoff(llm, [("system", INTENT_PROMPT), ("human", text)])
     req.ingredients = _clean_list(req.ingredients)
     req.exclude_ingredients = _clean_list(req.exclude_ingredients)
     if req.max_minutes is not None and req.max_minutes <= 0:
@@ -123,8 +124,8 @@ def plan_substitutions(request: UserRequest, recipes: list, llm=None) -> list:
         return []
 
     llm = llm or get_llm_chain(temperature=0, schema=SubstitutionPlan)
-    plan = llm.invoke(
-        [("system", SUBSTITUTION_PROMPT), ("human", json.dumps(items, ensure_ascii=False))]
+    plan = invoke_with_backoff(
+        llm, [("system", SUBSTITUTION_PROMPT), ("human", json.dumps(items, ensure_ascii=False))]
     )
 
     result, seen = [], set()
@@ -212,11 +213,12 @@ def plan_meals(shortlist: list, n: int, llm=None):
             }
             for r in shortlist
         ]
-        plan = llm.invoke(
+        plan = invoke_with_backoff(
+            llm,
             [
                 ("system", PLAN_PROMPT),
                 ("human", json.dumps({"meals": n, "shortlist": items}, ensure_ascii=False)),
-            ]
+            ],
         )
         for rid in plan.recipe_ids:
             if rid in by_id and rid not in chosen:
@@ -224,7 +226,10 @@ def plan_meals(shortlist: list, n: int, llm=None):
             if len(chosen) == n:
                 break
     except Exception as exc:
-        log.warning("meal planner LLM step failed, using the simple choice: %s", type(exc).__name__)
+        log.warning(
+            "meal planner LLM step failed, using the simple choice: %s: %s",
+            type(exc).__name__, exc,
+        )
 
     from_llm = len(chosen)
     chosen = _pick_varied(shortlist, n, already=chosen)
@@ -296,7 +301,7 @@ def write_answer(
         "plan": plan,
     }
     llm = get_llm_chain(temperature=0.3)
-    message = llm.invoke(
-        [("system", RESPONSE_PROMPT), ("human", json.dumps(payload, ensure_ascii=False))]
+    message = invoke_with_backoff(
+        llm, [("system", RESPONSE_PROMPT), ("human", json.dumps(payload, ensure_ascii=False))]
     )
     return message_text(message)
