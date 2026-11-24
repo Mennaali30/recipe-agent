@@ -78,18 +78,26 @@ Each recipe is embedded from its name, category, ingredient names and tags (not 
 Recipes are then ranked by: how many of your ingredients they use, fewest missing items,
 coverage, and semantic distance.
 
+The generated files (`data/processed/` and `chroma_db/`) are not committed; the steps below build them.
+
 ## Setup
 
-Tested only on **Google Colab (CPU, Python 3.13)** with the exact versions in `requirements.txt`.
+We ran the whole setup from scratch on a fresh **Google Colab runtime (CPU, Python 3.13)** with the exact
+versions in `requirements.txt`: install, download and clean the data, build the index, serve the saved
+example answers, and launch the chat UI. We did not test any other environment.
 The first install is large because `sentence-transformers` brings `torch`.
 
 You need a Gemini API key from [Google AI Studio](https://aistudio.google.com/). Use your own key:
-the free tier has small daily and per-minute limits (see below).
+the free tier has small daily and per-minute limits (see below). Without a key, only the saved
+example answers work.
 
 ### Google Colab
 
+The notebook `notebooks/run_in_colab.ipynb` contains the same steps as below.
+
 1. Add your key in Colab: the key icon, then a secret named `GOOGLE_API_KEY`, with notebook access on.
-2. Run these cells in order.
+2. Run these cells in order. If Colab asks you to restart the session after the install, restart and
+   continue from the second cell.
 
 ```python
 !git clone https://github.com/Mennaali30/recipe-agent.git
@@ -98,7 +106,7 @@ the free tier has small daily and per-minute limits (see below).
 ```
 
 ```python
-# Build the data and the index (needs to be done once per session, unless you back them up)
+# Build the data and the index (once per session, unless you back them up)
 import sys, kagglehub
 sys.path.insert(0, "/content/recipe-agent/src")
 from recipe_agent.ingest import run
@@ -146,7 +154,7 @@ python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\a
 pip install -r requirements.txt
 cp .env.example .env                                   # then put your key and model names in .env
 python -c "import kagglehub; print(kagglehub.dataset_download('irkaal/foodcom-recipes-and-reviews'))"
-python src/recipe_agent/ingest.py --raw-dir <folder printed above>      # run from the repo root
+python src/recipe_agent/ingest.py --raw-dir <folder printed above>
 python -c "import sys; sys.path.insert(0, 'src'); from recipe_agent.retriever import build_index; print(build_index())"
 python app/gradio_app.py
 ```
@@ -170,11 +178,12 @@ impact:
 
 - an identical request (ignoring case, spaces and trailing punctuation, with the same saved
   allergies) is answered from a cache with no LLM call;
-- `examples/answers_cache.json` ships saved answers for the example questions of the chat UI;
+- `examples/answers_cache.json` ships saved answers for the example questions of the chat UI, so
+  those three examples work instantly and without quota;
 - if the model fails while writing the answer, you still get the recipes as a plain answer.
 
 Understanding the request always needs the model, so a brand new question cannot be answered
-when the quota is exhausted.
+when the quota is exhausted (we hit this in the chat UI).
 
 ## Project structure
 
@@ -191,8 +200,9 @@ src/recipe_agent/
   verifier.py    allergy re-check, answer check, plain fallback answer
   cache.py       answer cache
   evaluation.py  evaluation code
-app/gradio_app.py      chat UI
-examples/answers_cache.json   saved answers for the UI examples
+app/gradio_app.py                chat UI
+notebooks/run_in_colab.ipynb     the Colab steps above
+examples/answers_cache.json      saved answers for the UI examples
 ```
 
 ## Evaluation
@@ -235,13 +245,15 @@ Hidden sources that are in neither list (for example chocolate that may contain 
 Canned soup used as an ingredient is caught by a heuristic: on the same sample it removed 9 of 1,583 recipes that
 pass the milk filter (0.6%), and some of those may be false alarms.
 
-**Intent agent (18 messages, uses the LLM).** 15 calls succeeded and all 15 were fully correct
-(ingredients, exclusions, time limit, language). 3 calls failed because of quota or server overload,
-so the figure counting failures is 83.3%. This was measured before the meal-plan, memory and
-clarifying-question fields were added to the prompt and was not re-run.
+**Intent agent (18 messages, uses the LLM).** All 18 calls succeeded and all 18 were fully correct
+(ingredients, exclusions, time limit, language), including the two messages without ingredients, which
+correctly returned empty lists. Run on the current prompt, with `gemini-3.6-flash` for the first 9 messages
+and `gemini-3.8-flash` for the other 9. The 18 messages only check the original fields: the newer fields
+(meals, remember, forget) are covered only by the end-to-end runs below.
 
-We also ran a handful of real end-to-end questions with Gemini (single recipe, allergies, substitutions,
-a 3-day plan, saving and clearing allergies). That is not a benchmark.
+We also ran a handful of real end-to-end questions with Gemini: a single recipe, allergies, substitutions,
+a 3-day plan, saving and clearing allergies, and a message that is not about cooking (a weather question),
+which got a question asking for ingredients. That is not a benchmark.
 
 To re-run:
 
@@ -267,11 +279,14 @@ df_int = ev.eval_intent()                 # about 18 LLM calls, waits 13 s betwe
 - **Recipes are user submitted.** Food.com recipes are not reviewed (we saw an unusual dishwasher-salmon
   recipe). Times and nutrition values are the dataset's, are approximate, and some look odd. We treat
   nutrition values as per serving, which we did not confirm in the dataset documentation.
-- **Translation by the LLM can be wrong.** We saw misspelled words and awkward phrases. In the plain
-  fallback answer the steps stay in English.
+- **Translation by the LLM can be wrong.** We saw misspelled words and awkward phrases, including in the
+  saved example answers, which we read once but may still contain slips. In the plain fallback answer the
+  steps stay in English.
 - **Matching is word based.** "Sweet potato" matches "potato", and "butter" can match "peanut butter".
 - **Substitutions** come from a table of about 25 ingredients that was written by hand and not tested
   in real cooking. Ingredients not in the table get no substitute.
+- **Off-topic messages** are not refused explicitly: the assistant asks which ingredients you have
+  (we tried one weather question).
 - **Saved allergies** are stored in a local JSON file. The chat UI has no login, so everyone who opens a
   public link shares one profile.
 - **Not an autonomous agent.** The workflow is fixed in code. The LLM decides when to ask a question, which
@@ -280,7 +295,7 @@ df_int = ev.eval_intent()                 # about 18 LLM calls, waits 13 s betwe
 
 ## Ideas for whoever continues
 
-- re-run the intent evaluation and extend it with the new fields (meals, remember, forget);
+- extend the intent evaluation with the newer fields (meals, remember, forget);
 - more saved example answers (read each one before committing, translations can have mistakes);
 - another LLM provider in `config.py` for a separate quota;
 - a dataset with ingredient quantities and units;
@@ -296,8 +311,8 @@ See the `LICENSE` file.
 بالخطوات والسعرات والمكونات الناقصة وقايمة تسوق، أو خطة وجبات لحد 5 أيام. البحث والمطابقة وفلتر الحساسية
 بالكود، وGemini بيفهم الطلب ويكتب الرد بس.
 
-للتشغيل على Colab: نفّذي خلايا قسم Setup بالترتيب، وحطي مفتاح Gemini بتاعك في Colab Secrets باسم
-`GOOGLE_API_KEY`. الكوتا المجانية صغيرة، فكل واحد يستخدم مفتاحه.
+للتشغيل على Colab: نفّذي خلايا قسم Setup بالترتيب (أو افتحي `notebooks/run_in_colab.ipynb`)، وحطي مفتاح
+Gemini بتاعك في Colab Secrets باسم `GOOGLE_API_KEY`. الكوتا المجانية صغيرة، فكل واحد يستخدم مفتاحه.
 
 أهم الحدود: الداتا من غير كميات ووحدات، وقوايم المكونات ممكن تبقى ناقصة، وفلتر الحساسية مش ضمان،
 فراجعي ملصقات المنتجات دايماً. التفاصيل في قسم Known limitations.
