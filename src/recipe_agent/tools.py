@@ -16,6 +16,8 @@ _DESCRIPTORS = {
     "medium", "boneless", "skinless", "unsalted", "salted", "whole", "finely",
     "cooked", "raw", "frozen", "of", "and", "ground", "dried",
     "table", "boiling", "all", "purpose", "extra", "virgin", "kosher", "sea",
+    "coarse", "coarsely", "cracked",
+}
 }
 
 # Words that turn an ingredient into a different product:
@@ -23,7 +25,7 @@ _DESCRIPTORS = {
 _PROCESSED = {
     "broth", "stock", "bouillon", "sauce", "powder", "soup", "paste", "oil",
     "butter", "cream", "milk", "cheese", "flour", "sugar", "vinegar",
-    "dressing", "seasoning", "extract", "mix", "instant",
+    "dressing", "seasoning", "extract", "mix", "instant", "cider",
 }
 
 
