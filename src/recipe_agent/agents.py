@@ -96,10 +96,19 @@ def plan_substitutions(request: UserRequest, recipes: list, llm=None) -> list:
     items, allowed = [], {}
     for recipe in recipes:
         options = []
+        missing_norms = [tools.normalize(m) for m in recipe.get("missing", [])]
         for missing in recipe.get("missing", []):
             cands = tools.substitute_candidates(
                 missing, request.ingredients, request.exclude_ingredients
             )
+            # A substitute that the recipe is itself missing is no help
+            # (for example lime juice <-> lemon juice when both are missing).
+            cands = [
+                c for c in cands
+                if not any(
+                    tools._matches(tools.normalize(c["substitute"]), m) for m in missing_norms
+                )
+            ]
             if cands:
                 options.append({"missing": missing, "candidates": cands})
                 allowed[(recipe["recipe_id"], missing.strip().lower())] = (
@@ -249,7 +258,8 @@ Rules:
   ممكنة, English: Possible substitutions). For each item write: the missing ingredient, the
   substitute, and the note translated faithfully. If "user_has" is true, say the user already has
   it. Use only what is in the data: never add other substitutes or quantities. Say these are
-  suggestions that were not tested.
+  suggestions from a small hand-written table that were not tested; never say they come from the
+  recipe dataset.
 - If "missing" is empty, say the user has everything they need.
 - If request.exclude_ingredients is not empty, add one short note that the filtering is based on
   ingredient names and recipe steps only and the user must double-check labels for allergies.
