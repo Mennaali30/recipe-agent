@@ -7,6 +7,8 @@ from pathlib import Path
 import pandas as pd
 import pyarrow.parquet as pq
 
+from recipe_agent.utils import clean_name, fahrenheit_to_celsius
+
 # Same location the retriever reads from, whatever the current working directory is.
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = ROOT / "data" / "processed" / "recipes.parquet"
@@ -42,6 +44,29 @@ def resolve_total_minutes(total, prep, cook):
         return int(total)
     parts = [x for x in (prep, cook) if ok(x)]
     return int(sum(parts)) if parts else None
+
+
+# Steps that describe waiting, not work: the long total is mostly marinating / chilling.
+_WAITING = re.compile(
+    r"marinat|overnight|refrigerat|chill|soak|\brising\b|\brises\b|\brose\b|proofing|"
+    r"let (?:it |the \w+ )?(?:rise|rest|stand|sit)\b[^.]*(?:hour|overnight|day)",
+    re.IGNORECASE,
+)
+
+
+def cap_waiting_time(total, prep, cook, instructions) -> int | None:
+    """Cap totals inflated by marinating / chilling time.
+
+    Many recipes count hours of marinating or chilling in TotalTime, so they never match
+    a time limit even though the active work is short. When the total is longer than
+    prep + cook and the steps mention waiting, count only the active time (prep + cook).
+    """
+    if total is None:
+        return None
+    active = sum(x for x in (prep, cook) if x is not None and x == x and x > 0)
+    if active and total > active and _WAITING.search(" ".join(str(s) for s in instructions)):
+        return int(active)
+    return int(total)
 
 
 def as_list(value):
@@ -106,25 +131,33 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     print(f"dropped (fewer ingredient names than quantities): {int(mismatch.sum()):,}")
     df = df[~mismatch].copy()
 
+    instructions_list = [
+        [fahrenheit_to_celsius(step) for step in as_list(xs)]
+        for xs in df["RecipeInstructions"]
+    ]
+    prep_list = df["PrepTime"].map(iso_to_minutes)
+    cook_list = df["CookTime"].map(iso_to_minutes)
+
     out = pd.DataFrame(
         {
             "recipe_id": df["RecipeId"].astype(int),
-            "name": df["Name"].map(clean_text),
+            "name": df["Name"].map(clean_text).map(clean_name),
             "description": df["Description"].fillna("").map(clean_text),
             "category": df["RecipeCategory"].fillna("").map(clean_text),
             "keywords": df["Keywords"].map(as_list),
             "ingredients": df["RecipeIngredientParts"].map(
                 lambda xs: [x.lower() for x in as_list(xs)]
             ),
-            "instructions": df["RecipeInstructions"].map(as_list),
-            "prep_minutes": df["PrepTime"].map(iso_to_minutes),
-            "cook_minutes": df["CookTime"].map(iso_to_minutes),
+            "instructions": instructions_list,
+            "prep_minutes": prep_list,
+            "cook_minutes": cook_list,
             "total_minutes": [
-                resolve_total_minutes(t, p, c)
-                for t, p, c in zip(
+                cap_waiting_time(resolve_total_minutes(t, p, c), p, c, ins)
+                for t, p, c, ins in zip(
                     df["TotalTime"].map(iso_to_minutes),
-                    df["PrepTime"].map(iso_to_minutes),
-                    df["CookTime"].map(iso_to_minutes),
+                    prep_list,
+                    cook_list,
+                    instructions_list,
                 )
             ],
             "servings": df["RecipeServings"].astype(int),

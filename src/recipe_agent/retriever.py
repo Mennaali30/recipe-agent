@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from recipe_agent.utils import clean_name
+
 ROOT = Path(__file__).resolve().parents[2]
 RECIPES_PATH = ROOT / "data" / "processed" / "recipes.parquet"
 DB_DIR = ROOT / "chroma_db"
@@ -42,7 +44,10 @@ def load_recipes() -> pd.DataFrame:
 
 
 def get_recipe(recipe_id: int) -> dict:
-    return load_recipes().loc[int(recipe_id)].to_dict()
+    recipe = load_recipes().loc[int(recipe_id)].to_dict()
+    # Tidy the name even when the stored data predates the ingest cleaning.
+    recipe["name"] = clean_name(recipe["name"])
+    return recipe
 
 
 def _metadata(name, category, total_minutes, calories) -> dict:
@@ -106,7 +111,10 @@ def search(query: str, n_results: int = 10, max_minutes: int | None = None) -> l
         hits.append(
             {
                 "recipe_id": int(rid),
-                **{k: v for k, v in meta.items() if k != "total_minutes"},
+                **{
+                    k: (clean_name(v) if k == "name" else v)
+                    for k, v in meta.items() if k != "total_minutes"
+                },
                 "total_minutes": minutes,
                 "distance": round(float(dist), 4),
             }
