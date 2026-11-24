@@ -65,7 +65,7 @@ def eval_retrieval(cases=None, top_k: int = 3, candidates: int = 40) -> pd.DataF
                 "main_share": sum(main_flags) / n if n else 0.0,
                 "avg_used_ratio": sum(r["used"] for r in res) / (n * len(ings)) if n else 0.0,
                 "any_full_use": any(r["used"] == len(ings) for r in res),
-                "time_ok": all(r["total_minutes"] <= limit for r in res) if limit else True,
+                "time_ok": all(r["total_minutes"] is not None and r["total_minutes"] <= limit for r in res) if limit else True,
                 "top1": res[0]["name"] if n else "",
             }
         )

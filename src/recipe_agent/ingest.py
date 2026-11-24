@@ -33,6 +33,17 @@ def iso_to_minutes(value):
     return days * 1440 + hours * 60 + minutes + seconds // 60
 
 
+def resolve_total_minutes(total, prep, cook):
+    """Total time in minutes, or None if unknown. A missing or zero total falls back to
+    prep + cook when that is positive; it is never turned into 0."""
+    def ok(x):
+        return x is not None and x == x and x > 0
+    if ok(total):
+        return int(total)
+    parts = [x for x in (prep, cook) if ok(x)]
+    return int(sum(parts)) if parts else None
+
+
 def as_list(value):
     """Turn a parquet list cell into a clean list of non-empty strings (HTML entities decoded)."""
     if value is None or isinstance(value, str) or not hasattr(value, "__iter__"):
@@ -108,7 +119,14 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
             "instructions": df["RecipeInstructions"].map(as_list),
             "prep_minutes": df["PrepTime"].map(iso_to_minutes),
             "cook_minutes": df["CookTime"].map(iso_to_minutes),
-            "total_minutes": df["TotalTime"].map(iso_to_minutes),
+            "total_minutes": [
+                resolve_total_minutes(t, p, c)
+                for t, p, c in zip(
+                    df["TotalTime"].map(iso_to_minutes),
+                    df["PrepTime"].map(iso_to_minutes),
+                    df["CookTime"].map(iso_to_minutes),
+                )
+            ],
             "servings": df["RecipeServings"].astype(int),
             "rating": df["AggregatedRating"],
             "review_count": df["ReviewCount"],

@@ -11,6 +11,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from recipe_agent import cache, memory, tools, verifier
+from recipe_agent.allergy import extract_allergies
 from recipe_agent.agents import (
     MAX_MEALS,
     parse_request,
@@ -43,7 +44,12 @@ class GraphState(TypedDict, total=False):
 
 
 def parse_node(state: GraphState) -> dict:
-    return {"request": parse_request(state["text"]), "attempt": 0}
+    req = parse_request(state["text"])
+    # Allergies named in the raw message are added by code, whatever the LLM extracted.
+    req.exclude_ingredients = list(
+        dict.fromkeys([*req.exclude_ingredients, *extract_allergies(state["text"])])
+    )
+    return {"request": req, "attempt": 0}
 
 
 def memory_node(state: GraphState) -> dict:
@@ -51,15 +57,20 @@ def memory_node(state: GraphState) -> dict:
     req = state["request"]
     uid = state.get("user_id") or "default"
     event = None
-    if req.forget_memory:
-        memory.forget(uid)
-        saved = []
-        event = "forgotten"
-    elif req.remember and req.exclude_ingredients:
-        saved = memory.remember_exclusions(uid, req.exclude_ingredients)
-        event = "saved"
-    else:
-        saved = memory.get_exclusions(uid)
+    saved = []
+    try:
+        if req.forget_memory:
+            memory.forget(uid)
+            event = "forgotten"
+        elif req.remember and req.exclude_ingredients:
+            saved = memory.remember_exclusions(uid, req.exclude_ingredients)
+            event = "saved"
+        else:
+            saved = memory.get_exclusions(uid)
+    except memory.MemoryReadError:
+        # The file is left untouched. Allergies from this message still apply.
+        log.exception("saved allergies could not be read")
+        event = "memory_error"
     req.exclude_ingredients = list(dict.fromkeys([*req.exclude_ingredients, *saved]))
     return {"request": req, "saved_exclusions": saved, "memory_event": event}
 
@@ -165,6 +176,12 @@ def clarify_node(state: GraphState) -> dict:
         )
     elif event == "forgotten":
         parts.append("تمام، مسحت الحساسيات المحفوظة." if ar else "Done, I cleared your saved allergies.")
+    elif event == "memory_error":
+        parts.append(
+            "معرفتش أقرا الحساسيات المحفوظة (الملف ماتمسحش). اكتبي الحساسية في رسالتك وهتتطبق."
+            if ar
+            else "I could not read your saved allergies (the file was not changed). Write the allergy in your message and it will be applied."
+        )
     elif req.remember:  # asked to remember, but there was nothing to save
         parts.append(
             "مقدرتش أحدد إيه اللي أحفظه. قوليلي الحساسية بالاسم، مثلاً: افتكري إني عندي حساسية من اللبن."
@@ -302,7 +319,10 @@ def _cacheable(out: dict) -> bool:
 
 def answer(text: str, user_id: str = "default", use_cache: bool = True) -> str:
     """Final answer for a message. A repeated request is served from the cache (no LLM call)."""
-    exclusions = memory.get_exclusions(user_id)
+    try:
+        exclusions = memory.get_exclusions(user_id)
+    except memory.MemoryReadError:
+        exclusions, use_cache = [], False  # never serve or store a cached answer blind
     if use_cache:
         hit = cache.get(text, exclusions)
         if hit:
