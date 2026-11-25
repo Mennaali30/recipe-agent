@@ -316,3 +316,11 @@ Gemini بتاعك في Colab Secrets باسم `GOOGLE_API_KEY`. الكوتا ا�
 
 أهم الحدود: الداتا من غير كميات ووحدات، وقوايم المكونات ممكن تبقى ناقصة، وفلتر الحساسية مش ضمان،
 فراجعي ملصقات المنتجات دايماً. التفاصيل في قسم Known limitations.
+
+## Phase 2: Egyptian data and EGP costs
+
+- `data/egypt/ingredient_price_map.csv`: EGP per kg per ingredient group (Arabic keywords). `price_source` is `wfp`, `current_web` (URL and date in the row) or `estimated` (rough placeholder, not sourced). Notes: `data/egypt/DATA_NOTES.txt`.
+- `src/recipe_agent/egypt_parse.py`: Arabic quantity to grams, time text to minutes, ingredient to price row.
+- `src/recipe_agent/egypt_cost.py`: `estimate_recipe_cost`, `format_cost`, `within_minutes`. Costs are always approximate. fifi's own `estimate.cost` is never used.
+- `scripts/fetch_fifi.py`: downloads the Egyptian recipes (collection != "world") from fifi.cooking. Credit fifi.cooking; the recipe text license is not stated, so ask the maintainers before any public release.
+- Tests: `pytest -q` (offline).

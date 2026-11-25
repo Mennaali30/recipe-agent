@@ -1,0 +1,24 @@
+Matbakhak data tools, 24 Nov 2026
+
+DATA
+- Recipes: fifi.cooking open JSON (https://fifi.cooking/data/index/N.json, /data/recipes/<id>.json). Use collection != "world" for Egyptian ones (1,881 of 2,380). Credit the source. Recipe text license is not stated (MIT covers code only): ask the maintainers before public release.
+- Prices: ingredient_price_map.csv, one row per ingredient group, Arabic keywords (first match wins, file order is priority), EGP per kg.
+
+PRICE COLUMNS
+- price_source: current_web (public Egyptian price page from 24 Nov 2026 or a few weeks earlier, URL + date in the row), wfp (WFP row dated 2026 or later), estimated (assistant's rough placeholder, NOT sourced, review before showing users).
+- current_price_type: retail, wholesale (Obour market, real shop prices are higher) or festival retail.
+- current_price_reliability: high (cabinet price portal figures via Masrawy / banker.news), medium (single news price list), low (one price, wide range or odd unit).
+- stale_wfp=1 means the latest WFP row is older than 2026-01-01. wfp_* columns are kept for reference only.
+- fifi estimate.cost is NOT used (its currency is unknown).
+
+PARSER (parse_matbakhak.py)
+- parse_amount(text) -> qty, unit, confidence. Handles Arabic digits, fractions, ranges (midpoint), ربع / نص / تلت / ثلاثة أرباع, كيلو, جرام, مل, لتر, كوب/كوباية, ملعقة كبيرة/صغيرة, حبة, فص, رأس, علبة, رشة. "حسب الرغبة" etc = to_taste (no grams, no cost).
+- Grams are internal for price math. Keep the recipe's original text (cups/spoons) for display.
+- parse_minutes(text) -> minutes (range = upper bound, "بدون طهو" = 0, vague text = None). parse_servings(text) -> number (range = midpoint).
+- Spoon/cup/piece to gram factors are per ingredient group in the map (g_per_cup, g_per_tbsp, ...). They are rough kitchen averages by the assistant.
+
+TEST on 60 random Egyptian recipes (595 ingredient lines)
+- 160 lines are "to taste". Of the other 435: 422 mapped to a price group, 383 got grams, 377 got a cost.
+- Times: all but 2 of 60 recipes fully parsed (the 2 are "بضع ساعات نقع" and "-").
+- Known errors: first keyword wins, so "سبانخ مكمورة باللحم المفري" is priced as minced beef; bare "ملعقة" is assumed tablespoon (flagged low confidence); count words without a unit assume pieces (flagged count_assumed); spices by pinch ~0.5 g. Spot-check before trusting any recipe total.
+- Output files: parsed_ingredients_sample_60_recipes.csv, recipe_times_servings_sample.csv.
