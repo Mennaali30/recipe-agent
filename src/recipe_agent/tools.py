@@ -18,7 +18,6 @@ _DESCRIPTORS = {
     "table", "boiling", "all", "purpose", "extra", "virgin", "kosher", "sea",
     "coarse", "coarsely", "cracked",
 }
-}
 
 # Words that turn an ingredient into a different product:
 # "chicken broth" is not "chicken", "garlic powder" is not "garlic".
