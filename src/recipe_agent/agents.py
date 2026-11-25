@@ -275,6 +275,11 @@ Rules:
 - If "memory_event" is "memory_error", say the saved allergies could not be read, only the allergies
   in this message were applied, and the user should double-check.
 - If a recipe's "total_minutes" is null, say its time is unknown. Never write 0 minutes.
+- If a recipe has "cost_text" (Egyptian recipes), copy it VERBATIM on its own line under that
+  recipe's info, numbers and words exactly as given. Never change it and never drop it.
+- Egyptian recipes already have Arabic names and steps and a "cost_text": keep the name as it is
+  (for English answers you may add a translation in parentheses). If the answer language is
+  English and the steps are Arabic, translate them faithfully like any other steps.
 - If "recipes" is empty, say no matching recipes were found and suggest adding more ingredients or
   allowing more time. Do not invent a recipe.
 - End with a combined shopping list if "shopping_list" is not empty.

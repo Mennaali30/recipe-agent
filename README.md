@@ -324,3 +324,14 @@ Gemini بتاعك في Colab Secrets باسم `GOOGLE_API_KEY`. الكوتا ا�
 - `src/recipe_agent/egypt_cost.py`: `estimate_recipe_cost`, `format_cost`, `within_minutes`. Costs are always approximate. fifi's own `estimate.cost` is never used.
 - `scripts/fetch_fifi.py`: downloads the Egyptian recipes (collection != "world") from fifi.cooking. Credit fifi.cooking; the recipe text license is not stated, so ask the maintainers before any public release.
 - Tests: `pytest -q` (offline).
+
+## Phase 3: Egyptian recipes inside the app
+
+- `data/egypt/recipes/` + `data/egypt/curated.json`: 150 curated Egyptian recipes from fifi.cooking, 25 in each of 6 buckets (chicken, meat, soups, mahshi, breakfast, street food). Chosen with the cost pipeline: price coverage >= 0.6, known time, no near-duplicate titles; iconic dishes (koshari, molokhia, tameya, foul) added by hand. Files are trimmed to the fields the app uses (`scripts/curate_egypt.py` reproduces the set, needs internet).
+- `src/recipe_agent/egypt_store.py`: loads the set, matches the user's ingredients (English or Arabic) through the price-map ingredient groups plus name matching, and returns recipes in the same shape as the English index, merged in `tools.find_recipes`.
+- Allergy filter works on the Arabic data: word scans (Arabic + English fields) AND fifi's own allergen flags (`allergens.contains`, gluten/lactose status) as a cross-check; either one excludes. The verifier re-checks Egyptian recipes the same way.
+- The under-N-minutes filter uses the parsed prep+cook time; recipes with unknown time never match a time limit.
+- The answer shows the approximate EGP cost with its price kind (`cost_text`, from `egypt_cost.format_cost`); the response agent is told to copy it verbatim and `graph.respond_node` appends any cost line the writer dropped.
+- Egyptian steps are Arabic; English steps are used when the data has them (rare), otherwise the writer translates.
+- Parser fixes found while spot-checking costs: a bare count of whole chicken (دجاجة/فرخة) now counts whole birds (was priced as 250 g pieces), اثنان/واحد and Persian پ cups parse, مليلتر is no longer read as litres, and minced poultry/shrimp is no longer priced as minced beef.
+- No new dependencies; no internet needed at runtime (data ships in the repo). Tests: `pytest -q` (offline).

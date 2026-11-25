@@ -1,7 +1,11 @@
 """Plain-Python tools: ingredient matching, shopping list, nutrition, recipe lookup,
 allergy filtering and substitution candidates."""
+import logging
 import re
 
+from recipe_agent import egypt_store
+
+log = logging.getLogger(__name__)
 from recipe_agent.allergy import EXTRA_ENGLISH_TERMS
 from recipe_agent.retriever import get_recipe, search
 from recipe_agent.utils import fahrenheit_to_celsius
@@ -244,9 +248,18 @@ def _used_count(user_ingredients, recipe_ingredients) -> int:
     return sum(1 for u in user if any(_matches(u, i) for i in ings))
 
 
-def get_instructions(recipe_id) -> list:
+def get_full_recipe(recipe_id) -> dict:
+    """The stored recipe (Food.com via the retriever, or a curated Egyptian one)."""
+    if egypt_store.is_egypt_id(recipe_id):
+        return egypt_store.get_recipe(recipe_id)
+    return get_recipe(recipe_id)
+
+
+def get_instructions(recipe_id, lang: str = "en") -> list:
     """The recipe's steps, as plain strings. Fahrenheit is shown Celsius-first even when
     the stored data was prepared before the ingest conversion ran."""
+    if egypt_store.is_egypt_id(recipe_id):
+        return egypt_store.instructions(recipe_id, lang)
     return [fahrenheit_to_celsius(str(s)) for s in get_recipe(recipe_id)["instructions"]]
 
 
@@ -450,13 +463,16 @@ def substitute_candidates(missing_item, user_ingredients, exclude=None) -> list:
 
 
 def find_recipes(
-    ingredients, max_minutes=None, exclude=None, top_k: int = 5, candidates: int = 40
+    ingredients, max_minutes=None, exclude=None, top_k: int = 5, candidates: int = 40,
+    lang: str = "en",
 ) -> list:
     """Search the index, compare ingredients, and rank recipes.
 
     Ranking: uses the most of the user's ingredients first, then fewest missing items,
     then highest coverage, then closest semantic match.
     Recipes containing an excluded ingredient (or its allergen family) are dropped.
+    The curated Egyptian recipes (egypt_store) are searched too and merged into the
+    same ranking; they carry an approximate EGP cost (cost_text).
     """
     query = "Ingredients: " + ", ".join(ingredients)
     min_used = min(2, len(ingredients))
@@ -486,5 +502,16 @@ def find_recipes(
                 "distance": hit["distance"],
             }
         )
-    results.sort(key=lambda r: (-r["used"], len(r["missing"]), -r["coverage"], r["distance"]))
+    try:
+        results += egypt_store.find(
+            ingredients, max_minutes=max_minutes, exclude=exclude, top_k=top_k, lang=lang
+        )
+    except Exception:  # the English index still answers if the Egyptian data is missing
+        log.exception("Egyptian recipe search skipped")
+    results.sort(
+        key=lambda r: (
+            -r["used"], len(r["missing"]), -r["coverage"],
+            r["distance"] if r["distance"] is not None else 0.5,
+        )
+    )
     return results[:top_k]

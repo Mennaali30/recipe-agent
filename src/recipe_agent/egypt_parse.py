@@ -5,6 +5,7 @@ AR = str.maketrans('٠١٢٣٤٥٦٧٨٩', '0123456789')
 def norm(s):
     s = s.translate(AR)
     s = re.sub('[\u064B-\u0652\u0640]', '', s)
+    s = s.replace('پ','ب').replace('ڤ','ف').replace('گ','ك')  # Persian/Urdu letters in some recipes
     return s.replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ى','ي').replace('ة','ه')
 
 # ---------- time ----------
@@ -40,14 +41,14 @@ def parse_servings(s):
     return sum(v) / len(v)
 
 # ---------- quantity ----------
-WORDNUM = {'ربع':0.25,'نص':0.5,'نصف':0.5,'تلت':1/3,'ثلث':1/3,'تلات':3,'ثلاث':3,'ثلاثه':3,'اتنين':2,'اثنين':2}
+WORDNUM = {'ربع':0.25,'نص':0.5,'نصف':0.5,'تلت':1/3,'ثلث':1/3,'تلات':3,'ثلاث':3,'ثلاثه':3,'اتنين':2,'اثنين':2,'اثنان':2,'واحد':1,'واحده':1}
 DUAL = ['معلقتين','ملعقتين','كوبايتين','كوبين','معلقات','معالق','ملاعق','حبتين','بيضتين','فصين']
 VOL = {'tbsp':['ملعقه كبيره','معلقه كبيره','ملاعق كبيره','معالق كبيره','معلقتين كبار','معلقات كبار','ملعقه اكل','معلقه اكل'],
        'tsp':['ملعقه صغيره','معلقه صغيره','ملاعق صغيره','معالق صغيره','معلقات صغيره','معلقتين صغيرتين','معلقتين صغار','ملعقه شاي','معلقه شاي'],
        'cup':['كوباي','كوب','فنجان']}
 PIECE = [('حبه','piece'),('حبات','piece'),('حبتين','piece'),('ثمره','piece'),('ثمار','piece'),('بيضه','piece'),('بيضات','piece'),('بيضتين','piece'),
          ('فصوص','clove'),('فص','clove'),('راس','head'),('رووس','head'),('علبه','can'),('علب','can'),('قطع','piece'),('قطعه','piece'),
-         ('بصل','piece'),('ليمون','piece'),('جزر','piece'),('خس','piece'),('ارغف','piece'),('رغيف','piece'),('صدر','piece'),('عود','piece'),('مكعب','piece'),('باكه','piece'),('باكيت','piece'),('حبتان','piece'),('شريحه','piece'),('شرائح','piece'),('شرايح','piece'),('ورقه','piece'),('ورقتين','piece'),('فرخه','whole_chicken'),('رغيف','piece'),('مخ','piece')]
+         ('بصل','piece'),('ليمون','piece'),('جزر','piece'),('خس','piece'),('ارغف','piece'),('رغيف','piece'),('صدر','piece'),('عود','piece'),('مكعب','piece'),('باكه','piece'),('باكيت','piece'),('حبتان','piece'),('شريحه','piece'),('شرائح','piece'),('شرايح','piece'),('ورقه','piece'),('ورقتين','piece'),('دجاج','whole_chicken'),('فراخ','whole_chicken'),('فرخه','whole_chicken'),('رغيف','piece'),('مخ','piece')]
 TASTE = ['حسب الرغبه','حسب الحاجه','حسب الذوق','للتحليه','للتزيين','للتقديم','قليل','للتحمير','رشه','رشات','لازم']
 
 def first_number(t):
@@ -67,7 +68,7 @@ def first_number(t):
         return v, 'num'
     for w in DUAL[:3]+DUAL[5:6]:
         pass
-    if re.search(r'معلقتين|ملعقتين|كوبايتين|كوبين|حبتين|بيضتين|فصين|ورقتين', t): return 2, 'word'
+    if re.search(r'معلقتين|ملعقتين|كوبايتين|كوبين|كوبان|حبتين|بيضتين|فصين|ورقتين', t): return 2, 'word'
     if re.search(r'معلقات|معالق|ملاعق', t): return 2, 'word'  # "معلقات" without number ~ 2 (flagged low confidence)
     for w, v in WORDNUM.items():
         if re.search(r'(^|\s)'+w+r'(\s|$)', t):
@@ -88,8 +89,8 @@ def parse_amount(text):
     unit = None
     if re.search(r'كيلو|كجم|كغ', t): unit = 'kg'
     elif re.search(r'جرام|غرام|جم\b', t): unit = 'g'
-    elif re.search(r'لتر', t): unit = 'l'
-    elif re.search(r'\d\s*مل\b', t): unit = 'ml'
+    elif re.search(r'مليلتر|ملليتر|ميليلتر|\d\s*مل\b', t): unit = 'ml'
+    elif re.search(r'(?<!ملي)(?<!ميلي)لتر', t): unit = 'l'  # مليلتر is ml, not litres
     elif re.search(r'رشه|رشات|رشة', t) and not re.search(r'رشفه', t): unit = 'pinch'; qty = qty or 1
     else:
         for u, keys in VOL.items():
@@ -114,14 +115,25 @@ def load_map(path):
 
 def match(name, rows):
     n = norm(name)
+    hit = None
     for r in rows:
         for k in r['_kws']:
             exact = k.startswith('=')
             k = k.lstrip('=')
             # keyword must start a word (optional leading ال); '=' also needs word end
             pat = r'(?<![\u0600-\u06FF])(?:ال)?' + re.escape(k) + (r'(?![\u0600-\u06FF])' if exact else '')
-            if re.search(pat, n): return r
-    return None
+            if re.search(pat, n): hit = r; break
+        if hit: break
+    # "فراخ مفرومة" must not be priced as minced beef: a poultry / seafood word in the
+    # name wins over the minced-meat keywords (the map is first-match-wins by file order).
+    if hit and hit['key'] in ('minced_beef', 'beef_generic', 'buffalo_meat'):
+        for pat, target in ((r'فراخ|فرخه|دجاج|كتكوت', 'chicken'),
+                            (r'جمبري|روبيان|قريدس', 'shrimp'),
+                            (r'بلطي', 'tilapia'), (r'تونه|تونا', 'tuna')):
+            if re.search(pat, n):
+                hit = next((r for r in rows if r['key'] == target), hit)
+                break
+    return hit
 
 def f(x):
     try: return float(x)
@@ -130,6 +142,12 @@ def f(x):
 def grams(a, r, ing_name=''):
     q, u = a['qty'], a['unit']
     if q is None: return None
+    if u is None and r is not None and f(r['g_per_whole']):
+        # a bare count of a whole bird ("دجاجة", "2 فراخ") is whole birds, not generic pieces
+        nn = norm(ing_name)
+        if re.search(r'فرخ|فراخ|دجاج', nn) and not re.search(
+                r'صدر|صدور|وراك|افخاذ|ورك|اجنح|جناح|قوانص|كبده|شاورما|مفروم|كفته|قطع|شرائح|شرايح|بانيه', nn):
+            u = 'whole_chicken'
     if u is None and (r is None or not f(r['g_per_piece'])): return None
     if u == 'kg': return q*1000
     if u == 'ml': return q*(f(r['density_g_per_ml']) or 1.0) if r else q

@@ -22,3 +22,10 @@ TEST on 60 random Egyptian recipes (595 ingredient lines)
 - Times: all but 2 of 60 recipes fully parsed (the 2 are "بضع ساعات نقع" and "-").
 - Known errors: first keyword wins, so "سبانخ مكمورة باللحم المفري" is priced as minced beef; bare "ملعقة" is assumed tablespoon (flagged low confidence); count words without a unit assume pieces (flagged count_assumed); spices by pinch ~0.5 g. Spot-check before trusting any recipe total.
 - Output files: parsed_ingredients_sample_60_recipes.csv, recipe_times_servings_sample.csv.
+
+
+PHASE 3 (curated set in the app)
+- data/egypt/recipes/*.json: 150 trimmed fifi files (translations/overlap/rawDocVersions dropped; fields the app uses kept: recipe header, masterIngredients name/nameEn/standardAmount, uniqueInstructions text/textEn, estimate, allergens, gluten, lactose). curated.json lists the ids per bucket.
+- Buckets by word-boundary keyword rules on title (+ preview ingredients for chicken/meat); desserts excluded; near-duplicate titles removed; hand-added icons: كشري (fah-437, fah-217, add-021), ملوخية (osool-547/548/550), طعمية (add-200, fah-327), فول مدمس (savory-06, osool-606), بليلة (des-31 was considered; final set in curated.json).
+- Spot-check band kept: every curated recipe has known time and total 5-1500 EGP with coverage >= 0.6 (soups >= 0.5). Totals are still approximate: herbs priced by keyword can land on the wrong group (شبت مفري reads as minced beef, a few piasters), and whole-bird weights are averages.
+- fifi allergen flags use EU-14 names; celery/mustard/lupin/sulphites have no app family (word scan only).

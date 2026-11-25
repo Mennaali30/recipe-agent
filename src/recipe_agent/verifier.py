@@ -1,7 +1,7 @@
 """Verifier: deterministic safety checks and a plain fallback answer (no model calls here)."""
 import re
 
-from recipe_agent import tools
+from recipe_agent import egypt_store, tools
 from recipe_agent.allergy import arabic_allergen_families, families_for_item
 from recipe_agent.retriever import get_recipe
 
@@ -38,18 +38,22 @@ def format_items(items, language="en") -> str:
 def verify_recipes(request, recipes):
     """Re-check the final recipes (and their substitutes) against the user's allergies.
 
-    Returns (kept_recipes, issues).
+    Returns (kept_recipes, issues). Egyptian recipes are re-checked with the Arabic-aware
+    filter (word scans + fifi's own allergen flags).
     """
     exclude = list(request.exclude_ingredients)
     kept, issues = [], []
     for recipe in recipes:
-        full = get_recipe(recipe["recipe_id"])
-        ingredients = [str(i) for i in full["ingredients"]]
-        steps = [str(s) for s in full["instructions"]]
-        if tools._is_excluded(full["name"], ingredients, exclude, steps):
-            issues.append(
-                {"recipe_id": recipe["recipe_id"], "problem": "recipe conflicts with the allergies"}
-            )
+        rid = recipe["recipe_id"]
+        if egypt_store.is_egypt_id(rid):
+            conflict = egypt_store.excluded(egypt_store.get_recipe(rid), exclude)
+        else:
+            full = get_recipe(rid)
+            ingredients = [str(i) for i in full["ingredients"]]
+            steps = [str(s) for s in full["instructions"]]
+            conflict = tools._is_excluded(full["name"], ingredients, exclude, steps)
+        if conflict:
+            issues.append({"recipe_id": rid, "problem": "recipe conflicts with the allergies"})
             continue
         recipe = dict(recipe)
         safe = []
@@ -178,7 +182,11 @@ def fallback_answer(
         minutes = r["total_minutes"]
         time_text = f"{minutes} {t['min']}" if minutes else t["unknown_time"]
         lines.append(f"- {t['time']}: {time_text} | {t['servings']}: {r['servings']}")
-        lines.append(f"- {t['cal']}: {n['calories']} | {t['protein']}: {n['protein_g']} g")
+        cal = n["calories"] if n.get("calories") is not None else t["unknown_time"]
+        protein = n["protein_g"] if n.get("protein_g") is not None else t["unknown_time"]
+        lines.append(f"- {t['cal']}: {cal} | {t['protein']}: {protein} g")
+        if r.get("cost_text"):
+            lines.append(f"- {r['cost_text']}")
         lines.append(f"- {t['have']}: {', '.join(r['have']) or t['none']}")
         lines.append(f"- {t['missing']}: {', '.join(r['missing']) or t['none']}")
         for sub in r.get("substitutions", []):

@@ -10,7 +10,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from recipe_agent import cache, memory, tools, verifier
+from recipe_agent import cache, egypt_store, memory, tools, verifier
 from recipe_agent.allergy import extract_allergies
 from recipe_agent.agents import (
     MAX_MEALS,
@@ -84,9 +84,10 @@ def search_node(state: GraphState) -> dict:
         exclude=req.exclude_ingredients,  # never relaxed: allergies stay enforced
         top_k=TOP_K,
         candidates=CANDIDATES[min(attempt, len(CANDIDATES) - 1)],
+        lang=req.language,
     )
     for recipe in found:
-        recipe["instructions"] = tools.get_instructions(recipe["recipe_id"])
+        recipe["instructions"] = tools.get_instructions(recipe["recipe_id"], lang=req.language)
     shopping = tools.shopping_list([r["missing"] for r in found])
     return {"recipes": found, "shopping": shopping, "attempt": attempt + 1}
 
@@ -104,13 +105,14 @@ def plan_node(state: GraphState) -> dict:
         exclude=req.exclude_ingredients,
         top_k=PLAN_SHORTLIST,
         candidates=200,
+        lang=req.language,
     )
     planned, source = plan_meals(shortlist, n)
     recipes = []
     for day, recipe in enumerate(planned, 1):
         recipe = dict(recipe)
         recipe["day"] = day
-        recipe["instructions"] = tools.get_instructions(recipe["recipe_id"])
+        recipe["instructions"] = tools.get_instructions(recipe["recipe_id"], lang=req.language)
         recipe["substitutions"] = []
         recipes.append(recipe)
     shopping = tools.shopping_list([r["missing"] for r in recipes])
@@ -220,6 +222,9 @@ def respond_node(state: GraphState) -> dict:
             memory_event=state.get("memory_event"),
             plan=state.get("plan_info"),
         )
+        # The approximate cost of an Egyptian recipe always reaches the answer,
+        # even if the writer dropped it.
+        text = egypt_store.ensure_cost_lines(text, state["recipes"], state["request"].language)
         return {"answer": text, "fallback": None}
     except Exception as exc:
         # Log the real error (quota, overload, key...) so it can be diagnosed,
