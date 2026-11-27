@@ -25,6 +25,7 @@ from recipe_agent.egypt_cost import (estimate_recipe_cost, format_cost,
                                      load_price_map, recipe_minutes)
 from recipe_agent.egypt_parse import match as price_match
 from recipe_agent.egypt_parse import norm, parse_servings
+from recipe_agent.textfix import fix_recipe_text
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data" / "egypt"
@@ -165,7 +166,7 @@ def _entry(recipe_id: str, raw: dict, bucket: str, price_map) -> dict:
     servings = parse_servings(rec.get("servings")) or (estimate.get("servings") or None)
     return {
         "recipe_id": ID_PREFIX + recipe_id,
-        "name": rec.get("title") or recipe_id,
+        "name": fix_recipe_text(rec.get("title") or recipe_id, recipe_id),
         "name_en": rec.get("titleEn") or "",
         "category": bucket,  # chicken / meat / soups / mahshi / breakfast / street
         "category_ar": rec.get("category") or "",
@@ -175,9 +176,9 @@ def _entry(recipe_id: str, raw: dict, bucket: str, price_map) -> dict:
             (price_match(m.get("name") or "", price_map) or {}).get("key") for m in ings
         ],
         "to_taste": [l["to_taste"] for l in est["lines"]],
-        "instructions": [s.get("text") or "" for s in rec.get("uniqueInstructions", [])],
+        "instructions": [fix_recipe_text(s.get("text") or "", recipe_id) for s in rec.get("uniqueInstructions", [])],
         "instructions_en": [
-            (s.get("textEn") or s.get("text") or "") for s in rec.get("uniqueInstructions", [])
+            (s.get("textEn") or fix_recipe_text(s.get("text") or "", recipe_id)) for s in rec.get("uniqueInstructions", [])
         ],
         "total_minutes": recipe_minutes(raw),
         "servings": int(servings) if servings else 4,

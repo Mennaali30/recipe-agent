@@ -10,7 +10,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from recipe_agent import cache, egypt_store, memory, tools, verifier
+from recipe_agent import cache, egypt_store, memory, textfix, tools, verifier
 from recipe_agent.allergy import extract_allergies
 from recipe_agent.agents import (
     MAX_MEALS,
@@ -321,6 +321,7 @@ def respond_node(state: GraphState) -> dict:
         # The approximate cost of an Egyptian recipe always reaches the answer,
         # even if the writer dropped it.
         text = egypt_store.ensure_cost_lines(text, state["recipes"], state["request"].language)
+        text = textfix.fix_answer(text, state["request"].language)
         return {"answer": _with_egypt_note(note, text), "fallback": None, "egypt_note": note}
     except Exception as exc:
         # Log the real error (quota, overload, key...) so it can be diagnosed,
