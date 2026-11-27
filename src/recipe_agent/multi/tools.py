@@ -12,7 +12,10 @@ from typing import Any, Callable, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from recipe_agent.services import (ExtraExpense, HistoryService, IngredientInput, InsufficientStock, PantryService,
+import json
+import os
+
+from recipe_agent.services import (ApprovalService, ExtraExpense, HistoryService, IngredientInput, InsufficientStock, PantryService,
                                    ProfileService, ProfileUpdate,
                                    RecipeInput, UnitError, build_shopping_list, check_budget,
                                    convert, plan_production, recipe_cost, recipe_from_fifi,
@@ -87,6 +90,14 @@ class PantryUseArgs(BaseModel):
     items: list[PantryEntry] = Field(min_length=1)
 
 
+class PantryDiscardArgs(BaseModel):
+    items: list[PantryEntry] = Field(min_length=1, description="Items to throw away completely (name, optional unit).")
+
+
+class PantryAdjustArgs(BaseModel):
+    items: list[PantryEntry] = Field(min_length=1, description="Items with the exact quantity now on the shelf.")
+
+
 class PantryReadArgs(BaseModel):
     within_days: int = Field(default=3, ge=0, le=60)
 
@@ -123,6 +134,7 @@ class ToolContext:
     message: str = ""                              # the raw user message being handled
     history: list = field(default_factory=list)    # recent HistoryEntry items, oldest first
     memory: Any = None                             # allergy memory module (default recipe_agent.memory)
+    approved: bool = False                         # True only when the user just confirmed this exact action
 
 
 @dataclass
@@ -132,6 +144,8 @@ class ToolSpec:
     args_model: type
     fn: Callable
     writes: bool = False
+    approval: bool = False                         # needs the user's yes first (see services/approvals.py)
+    describe: Optional[Callable] = None            # (ctx, parsed args) -> {"ar": ..., "en": ...}
 
 
 class ToolError(Exception):
@@ -163,6 +177,8 @@ class ToolRegistry:
         except ValidationError as exc:
             return ToolResult(False, error=str(exc.errors()[0]["msg"]) if exc.errors() else "bad arguments",
                               error_code="bad_args")
+        if spec.approval and not ctx.approved:
+            return self._stage(spec, parsed, ctx)
         try:
             return ToolResult(True, data=spec.fn(ctx, parsed))
         except ToolError as exc:
@@ -172,6 +188,25 @@ class ToolRegistry:
         except (UnitError, ValueError) as exc:
             return ToolResult(False, error=str(exc), error_code="unit" if isinstance(exc, UnitError) else "bad_args")
         except Exception as exc:  # a tool bug must not crash the whole graph
+            return ToolResult(False, error=f"{type(exc).__name__}: {exc}", error_code="failed")
+
+
+    def _stage(self, spec, parsed, ctx) -> ToolResult:
+        """Do not run a sensitive tool: save it and ask the user. Fails closed (nothing runs) on any problem."""
+        if ctx.session_factory is None:
+            return ToolResult(False, error="approval needs a database", error_code="failed")
+        try:
+            try:
+                summary = spec.describe(ctx, parsed) if spec.describe else {}
+            except Exception:
+                summary = {}
+            ar = summary.get("ar") or f"تنفيذ: {spec.name}"
+            en = summary.get("en") or f"Run: {spec.name}"
+            with _Session(ctx) as s:
+                ApprovalService(s).stage(ctx.user_id, spec.name, parsed.model_dump(mode="json"), ar, en)
+            return ToolResult(False, data={"ar": ar, "en": en}, error="waiting for the user's approval",
+                              error_code="needs_approval")
+        except Exception as exc:
             return ToolResult(False, error=f"{type(exc).__name__}: {exc}", error_code="failed")
 
 
@@ -308,6 +343,56 @@ def t_pantry_add(ctx, a: PantryChangeArgs):
     return out
 
 
+def _stock_text(ctx, name) -> str:
+    """What is in the pantry for one item now, e.g. '2000 g' (for the confirmation question)."""
+    try:
+        with _Session(ctx) as s:
+            ms = PantryService(s).get_stock(ctx.user_id, name)
+        parts = [f"{m.value:g} {m.unit}" for m in ms if m.value]
+        return " + ".join(parts) if parts else "0"
+    except Exception:
+        return "?"
+
+
+def d_pantry_discard(ctx, a: PantryDiscardArgs):
+    rows = "، ".join(f"{e.name} ({_stock_text(ctx, e.name)})" for e in a.items)
+    rows_en = ", ".join(f"{e.name} ({_stock_text(ctx, e.name)})" for e in a.items)
+    return {"ar": f"مسح كل الكمية من المخزن: {rows}", "en": f"Throw away all the stock of: {rows_en}"}
+
+
+def d_pantry_adjust(ctx, a: PantryAdjustArgs):
+    rows = "، ".join(f"{e.name}: {_stock_text(ctx, e.name)} ← {e.quantity:g} {e.unit or ''}".rstrip() for e in a.items)
+    rows_en = ", ".join(f"{e.name}: {_stock_text(ctx, e.name)} -> {e.quantity:g} {e.unit or ''}".rstrip() for e in a.items)
+    return {"ar": f"تعديل كمية المخزن إلى الرقم الجديد: {rows}", "en": f"Set the pantry stock to the new amount: {rows_en}"}
+
+
+def d_profile_clear(ctx, a):
+    ar = {"allergies": "الحساسيات المحفوظة", "profile": "البروفايل", "history": "تاريخ المحادثات",
+          "all": "الحساسيات والبروفايل وتاريخ المحادثات"}[a.what]
+    en = {"allergies": "your saved allergies", "profile": "your profile", "history": "your chat history",
+          "all": "your saved allergies, profile and chat history"}[a.what]
+    return {"ar": f"مسح {ar}", "en": f"Delete {en}"}
+
+
+def t_pantry_discard(ctx, a: PantryDiscardArgs):
+    """All or nothing: every item must exist first."""
+    with _Session(ctx) as s:
+        svc = PantryService(s)
+        for e in a.items:
+            if not [m for m in svc.get_stock(ctx.user_id, e.name)]:
+                raise ToolError("not_found", f"{e.name} is not in the pantry")
+        return [svc.discard_item(ctx.user_id, e.name, e.unit) for e in a.items]
+
+
+def t_pantry_adjust(ctx, a: PantryAdjustArgs):
+    for e in a.items:
+        if e.quantity is None:
+            raise ToolError("bad_args", f"the new quantity of {e.name} is missing")
+    with _Session(ctx) as s:
+        svc = PantryService(s)
+        return [svc.adjust_item(ctx.user_id, e.name, e.quantity, e.unit) for e in a.items]
+
+
 def t_pantry_use(ctx, a: PantryUseArgs):
     """All or nothing: every item is checked against the stock first, so a failure changes nothing."""
     with _Session(ctx) as s:
@@ -377,7 +462,28 @@ def t_profile_clear(ctx, a: ProfileClearArgs):
     return done
 
 
-def build_registry() -> ToolRegistry:
+DEFAULT_APPROVAL_TOOLS = ("pantry_discard", "pantry_adjust", "profile_clear")
+
+
+def approval_tools_from_env(default=DEFAULT_APPROVAL_TOOLS):
+    """RECIPE_APPROVAL_TOOLS="pantry_discard,pantry_add" replaces the list; "none" turns approval off."""
+    raw = os.getenv("RECIPE_APPROVAL_TOOLS")
+    if raw is None:
+        return set(default)
+    return set() if raw.strip().lower() in ("", "none") else {x.strip() for x in raw.split(",") if x.strip()}
+
+
+def build_registry(approval_tools=None) -> ToolRegistry:
+    need = approval_tools_from_env() if approval_tools is None else set(approval_tools)
+    reg = _base_registry()
+    for name in need:
+        if name not in reg.specs:
+            raise ValueError(f"unknown tool in the approval list: {name}")
+        reg.specs[name].approval = True
+    return reg
+
+
+def _base_registry() -> ToolRegistry:
     return ToolRegistry([
         ToolSpec("convert_units", "Convert a quantity of an ingredient to grams / ml / count.", ConvertArgs, t_convert),
         ToolSpec("recipe_cost", "Cost and cost per serving of a recipe, with optional extra expenses.", CostArgs, t_cost),
@@ -390,6 +496,8 @@ def build_registry() -> ToolRegistry:
         ToolSpec("pantry_expiring", "Expired and soon-to-expire items.", PantryReadArgs, t_pantry_expiring),
         ToolSpec("profile_show", "Show the user's saved profile and saved allergies.", EmptyArgs, t_profile_show),
         ToolSpec("profile_update", "Save profile preferences and/or allergies the user asked to save.", ProfileChangeArgs, t_profile_update, writes=True),
-        ToolSpec("profile_clear", "Delete saved allergies, profile and/or chat history.", ProfileClearArgs, t_profile_clear, writes=True),
+        ToolSpec("profile_clear", "Delete saved allergies, profile and/or chat history (asks the user first).", ProfileClearArgs, t_profile_clear, writes=True, describe=d_profile_clear),
+        ToolSpec("pantry_discard", "Throw away ALL the stock of an item (asks the user first).", PantryDiscardArgs, t_pantry_discard, writes=True, describe=d_pantry_discard),
+        ToolSpec("pantry_adjust", "Set the stock of an item to an exact amount (asks the user first).", PantryAdjustArgs, t_pantry_adjust, writes=True, describe=d_pantry_adjust),
         ToolSpec("pantry_low_stock", "Items at or below their low-stock threshold.", EmptyArgs, t_pantry_low),
     ])

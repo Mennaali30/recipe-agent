@@ -4,14 +4,17 @@ The router (LLM, with a keyword fallback) picks 1 or 2 agents. Agents run in ord
 needs more information, or fails, stops the chain: the user gets its question or error, plus the
 answers already produced. Nothing is retried blindly and nothing is guessed.
 """
+import dataclasses
 import logging
+import re
+from datetime import datetime, timezone
 from typing import Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from .agents import (AgentResult, BudgetAgent, BusinessAgent, CostAgent, PantryAgent, RecipesAgent,
+from .agents import (tool_failure_text, tr, AgentResult, BudgetAgent, BusinessAgent, CostAgent, PantryAgent, RecipesAgent,
                      ROUTER_PROMPT, RouteDecision, ShoppingAgent, ProfileAgent, keyword_route, keyword_topics, with_context)
-from recipe_agent.services import HistoryService
+from recipe_agent.services import ApprovalService, HistoryService, is_no, is_yes
 
 from .llm import llm_extract
 from .tools import ToolContext, build_registry
@@ -31,10 +34,11 @@ class SupState(TypedDict, total=False):
     route_source: str
     answer: str
     history: list
+    gated: bool
 
 
 def build_supervisor(extract=None, session_factory=None, store_loader=None, recipe_pipeline=None,
-                     registry=None, today=None, memory=None, save_history=True, router="llm"):
+                     registry=None, today=None, memory=None, save_history=True, router="llm", now=None):
     """Compile the supervisor graph. Everything external is injectable (tests use fakes).
 
     router: "llm" always asks the LLM; "keywords" never does; "hybrid" (used by the app, to save free
@@ -70,6 +74,42 @@ def build_supervisor(extract=None, session_factory=None, store_loader=None, reci
         except Exception:
             log.exception("could not load the chat history")
             return {"history": []}
+
+    def gate(state: SupState) -> dict:
+        """Sensitive actions: the user's next message answers a saved pending action.
+        yes -> run exactly the saved action (approved); no -> cancel; anything else -> drop it, route normally."""
+        uid = state.get("user_id") or "default"
+        text = state["text"]
+        try:
+            with session_factory() as s:
+                pend = ApprovalService(s).take(uid, now() if now else datetime.now(timezone.utc))
+        except Exception:
+            log.exception("could not read the pending action")
+            return {"gated": False}
+        if pend is None:
+            return {"gated": False}
+        lang = "ar" if re.search("[\u0600-\u06ff]", text) else "en"
+        if is_no(text):
+            res = AgentResult("approval", answer=tr(lang, "تمام، لغيت الإجراء ومفيش حاجة اتغيرت.",
+                                                    "Okay, cancelled. Nothing was changed."))
+        elif is_yes(text):
+            ctx = dataclasses.replace(make_ctx(state), approved=True)
+            name = "profile" if pend.tool == "profile_clear" else "pantry"
+            res = AgentResult(name)
+            out = registry.call(pend.tool, pend.args, ctx, allowed={pend.tool})
+            res.tool_calls.append((pend.tool, out.ok))
+            if out.ok:
+                res.data = out.data
+                res.answer = tr(lang, "تمام، اتنفذ.", "Done.")
+            else:
+                res.ok = False
+                res.answer, res.needs_input = tool_failure_text(out, lang)
+        else:
+            return {"gated": False}   # a different message: the pending action is dropped, nothing runs
+        return {"gated": True, "results": [res], "pending": [], "language": lang}
+
+    def after_gate(state: SupState) -> str:
+        return "finalize" if state.get("gated") else "route"
 
     def route(state: SupState) -> dict:
         text = state["text"]
@@ -129,7 +169,9 @@ def build_supervisor(extract=None, session_factory=None, store_loader=None, reci
     g.add_node("finalize", finalize)
     g.add_node("history", load_history)
     g.add_edge(START, "history")
-    g.add_edge("history", "route")
+    g.add_node("gate", gate)
+    g.add_edge("history", "gate")
+    g.add_conditional_edges("gate", after_gate, {"finalize": "finalize", "route": "route"})
     targets = {n: n for n in NODES} | {"finalize": "finalize"}
     g.add_conditional_edges("route", next_node, targets)
     for n in NODES:

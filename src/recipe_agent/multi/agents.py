@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from .tools import (BudgetArgs, BudgetItem, ConvertArgs, CostArgs, PantryChangeArgs, PantryEntry,
+from .tools import (PantryAdjustArgs, PantryDiscardArgs, BudgetArgs, BudgetItem, ConvertArgs, CostArgs, PantryChangeArgs, PantryEntry,
                     PantryReadArgs, PantryUseArgs, ProductionArgs, RecipeRef, ShoppingArgs,
                     ShoppingRecipe, ToolContext, ToolRegistry, ToolResult, ProfileChangeArgs, ProfileClearArgs, EmptyArgs)
 from recipe_agent.price_range import label_text, range_text
@@ -98,6 +98,10 @@ STATUS_NOTE = {
 def tool_failure_text(res: ToolResult, lang) -> tuple:
     """(text, needs_input) for a failed tool call."""
     code = res.error_code
+    if code == "needs_approval":
+        what = (res.data or {}).get("ar" if lang == "ar" else "en", "")
+        return tr(lang, f"ده إجراء حساس، مش هنفذه من غير موافقتك:\n{what}\nاكتبي «تأكيد» للتنفيذ أو «لا» للإلغاء.",
+                  f"This is a sensitive action, so I will not run it without your approval:\n{what}\nReply \"yes\" to do it or \"no\" to cancel."), True
     if code == "ambiguous":
         names = "، ".join(c["name"] for c in res.candidates) if lang == "ar" else ", ".join(c["name"] for c in res.candidates)
         return tr(lang, f"أي وصفة تقصدي؟ ({names})", f"Which recipe do you mean? ({names})"), True
@@ -191,17 +195,20 @@ class RecipesAgent(Specialist):
 
 # ---------------------------------------------------------------- pantry
 class PantryRequest(BaseModel):
-    action: Literal["add", "use", "list", "expiring", "low_stock"]
-    items: list[PantryEntry] = Field(default_factory=list, description="For add / use. Quantity and unit as the user said.")
+    action: Literal["add", "use", "list", "expiring", "low_stock", "remove", "set"]
+    items: list[PantryEntry] = Field(default_factory=list, description=(
+        "For add / use / set: quantity and unit as the user said. For remove: just the item names."))
     within_days: int = Field(default=3, description="For expiring: days ahead.")
 
 
 class PantryAgent(Specialist):
     name = "pantry"
-    tools = {"pantry_add", "pantry_use", "pantry_list", "pantry_expiring", "pantry_low_stock"}
+    tools = {"pantry_add", "pantry_use", "pantry_list", "pantry_expiring", "pantry_low_stock",
+             "pantry_discard", "pantry_adjust"}
     schema = PantryRequest
     prompt = ("Extract the pantry action. add = the user bought / has more; use = the user used / cooked "
-              "with it; list = show the pantry; expiring = what expires soon; low_stock = what is running out. "
+              "with it; list = show the pantry; expiring = what expires soon; low_stock = what is running out; "
+              "remove = throw away / delete an item completely; set = the stock is exactly this amount now (a count). "
               "Copy quantities and units exactly as written; never invent a quantity.")
 
     @staticmethod
@@ -210,6 +217,20 @@ class PantryAgent(Specialist):
                          for v in views)
 
     def handle(self, a: PantryRequest, lang, ctx, result):
+        if a.action in ("remove", "set"):
+            if not a.items or (a.action == "set" and any(e.quantity is None for e in a.items)):
+                result.needs_input = True
+                result.answer = tr(lang, "إيه الأصناف" + (" والكميات الجديدة؟" if a.action == "set" else " اللي أمسحها؟"),
+                                   "Which items" + (" and new amounts?" if a.action == "set" else " should I delete?"))
+                return
+            tool = "pantry_discard" if a.action == "remove" else "pantry_adjust"
+            model = PantryDiscardArgs if a.action == "remove" else PantryAdjustArgs
+            res = self.call(tool, model(items=a.items), ctx, result)
+            if not res.ok:
+                return self.fail(res, lang, result)
+            result.data = res.data
+            result.answer = tr(lang, "تمام، اتنفذ. المخزن دلوقتي:", "Done. The pantry now has:") + "\n" + self._rows(res.data, lang)
+            return
         if a.action in ("add", "use"):
             if not a.items:
                 result.needs_input = True

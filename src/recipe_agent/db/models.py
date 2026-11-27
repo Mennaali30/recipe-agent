@@ -74,6 +74,19 @@ class UserProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class PendingAction(Base):
+    """A sensitive action waiting for the user's yes (one per user; the next message answers it)."""
+    __tablename__ = "pending_actions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    tool: Mapped[str] = mapped_column(String(100))
+    args_json: Mapped[str] = mapped_column(Text)
+    summary_ar: Mapped[str] = mapped_column(Text, default="")
+    summary_en: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ChatMessage(Base):
     """Saved conversation history (what the user wrote and what the assistant answered)."""
     __tablename__ = "chat_messages"

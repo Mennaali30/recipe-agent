@@ -161,14 +161,20 @@ def test_profile_agent_clear_requires_explicit_target(sf):
 def test_profile_agent_clear_history_deletes_and_does_not_log_itself(sf):
     HistoryService(sf()).add("u1", "user", "old")
     req = ProfileRequest(action="clear", clear_what="history")
-    out = ask(graph(FakeLLM(RouteDecision=route("profile"), ProfileRequest=req), sf), "امسحي المحادثات")
-    assert HistoryService(sf()).count("u1") == 0 and "Done, deleted: chat history" in out["answer"]
+    g = graph(FakeLLM(RouteDecision=route("profile"), ProfileRequest=req), sf)
+    first = ask(g, "امسحي المحادثات")
+    assert HistoryService(sf()).count("u1") > 0 and "yes" in first["answer"]   # approval first: nothing deleted yet
+    out = ask(g, "yes")
+    assert HistoryService(sf()).count("u1") == 0 and out["answer"] == "Done."
 
 
 def test_profile_agent_clear_allergies_and_all(sf):
     ProfileService(sf(), memory).add_allergies("u1", ["milk"])
     ProfileService(sf(), memory).update("u1", ProfileUpdate(family_size=2))
-    out = ask(graph(FakeLLM(RouteDecision=route("profile"), ProfileRequest=ProfileRequest(action="clear", clear_what="all")), sf))
+    g = graph(FakeLLM(RouteDecision=route("profile"), ProfileRequest=ProfileRequest(action="clear", clear_what="all")), sf)
+    ask(g)
+    assert memory.get_exclusions("u1") == ["milk"]      # staged only
+    ask(g, "yes")
     assert memory.get_exclusions("u1") == [] and not ProfileService(sf(), memory).get("u1").exists
     assert HistoryService(sf()).count("u1") == 0
 
