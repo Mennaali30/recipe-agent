@@ -189,3 +189,137 @@ def test_fallback_answer_shows_cost_and_handles_missing_nutrition():
     req = UserRequest(ingredients=["فراخ"], language="ar")
     text = verifier.fallback_answer(req, [r], [])
     assert r["cost_text"] in text
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3.1: clear note when no Egyptian recipe matches the conditions
+# --------------------------------------------------------------------------- #
+def _intl_recipe():
+    """A Food.com-style result (as find_recipes builds for the English index)."""
+    return {
+        "recipe_id": 12345,
+        "name": "Lemon Chicken",
+        "category": "chicken",
+        "total_minutes": 25,
+        "servings": 4,
+        "nutrition": {"calories": 300, "protein_g": 20.0, "carbs_g": 10.0,
+                      "fat_g": 12.0, "sugar_g": 2.0},
+        "used": 1,
+        "have": ["chicken"],
+        "missing": ["lemon"],
+        "coverage": 0.5,
+        "distance": 0.4,
+        "instructions": ["Cook it."],
+        "substitutions": [],
+    }
+
+
+def test_no_match_note_none_when_results_empty():
+    assert egypt_store.no_match_note([], ["فراخ"], lang="ar") is None
+
+
+def test_no_match_note_none_when_egyptian_shown(store):
+    found = egypt_store.find(["فراخ"], top_k=1, lang="ar")
+    assert egypt_store.no_match_note(found, ["فراخ"], lang="ar") is None
+
+
+def test_no_match_note_none_when_egyptian_matches_same_conditions(store):
+    # Egyptian recipes DO match chicken without constraints: they only ranked out
+    # of the shown list, so there is nothing to explain.
+    assert egypt_store.no_match_note([_intl_recipe()], ["فراخ"], lang="ar") is None
+
+
+def test_reported_gap_chicken_milk_allergy_under_30_min(store):
+    # The Phase 3.1 case: nothing Egyptian is left, only international recipes are shown.
+    assert egypt_store.find(["فراخ"], max_minutes=30, exclude=["milk"], top_k=5) == []
+
+
+def test_no_match_note_suggests_closest_with_more_time(store):
+    note = egypt_store.no_match_note(
+        [_intl_recipe()], ["فراخ"], max_minutes=30, exclude=["milk"], lang="ar"
+    )
+    assert note and "مفيش وصفة مصرية" in note and "عالمية" in note
+    assert "أقرب وصفة مصرية" in note and "دقيقة" in note
+    # The suggested recipe really is milk-free: the allergy filter is never relaxed.
+    relaxed = egypt_store.find(["فراخ"], exclude=["milk"], top_k=1, lang="ar")
+    assert relaxed and relaxed[0]["name"] in note
+    assert "milk" not in store["entries"][relaxed[0]["recipe_id"]]["families"]
+
+
+def test_no_match_note_plain_when_nothing_even_without_time_limit(store):
+    # Cheese dishes all contain milk: with a milk allergy there is no closest option.
+    note = egypt_store.no_match_note([_intl_recipe()], ["جبنة"], exclude=["milk"], lang="ar")
+    assert note and "مفيش وصفة مصرية" in note and "أقرب وصفة مصرية" not in note
+
+
+def test_no_match_note_english(store):
+    note = egypt_store.no_match_note(
+        [_intl_recipe()], ["chicken"], max_minutes=30, exclude=["milk"], lang="en"
+    )
+    assert note and note.startswith("Note: no Egyptian recipe")
+    assert "closest Egyptian recipe" in note
+
+
+def test_no_match_note_never_blocks_the_answer_check(store):
+    req = UserRequest(
+        ingredients=["فراخ"], exclude_ingredients=["milk"], max_minutes=30, language="ar"
+    )
+    note = egypt_store.no_match_note(
+        [_intl_recipe()], req.ingredients, max_minutes=30, exclude=["milk"], lang="ar"
+    )
+    blocking, _ = verifier.check_answer(req, [_intl_recipe()], note + "\n\n### Lemon Chicken")
+    assert blocking == []
+
+
+def test_respond_node_prepends_no_match_note(monkeypatch):
+    from recipe_agent import graph
+
+    req = UserRequest(
+        ingredients=["فراخ"], exclude_ingredients=["milk"], max_minutes=30, language="ar"
+    )
+    monkeypatch.setattr(graph, "write_answer", lambda *a, **k: "ANSWER")
+    out = graph.respond_node({"request": req, "recipes": [_intl_recipe()], "shopping": []})
+    assert out["answer"].startswith("ملاحظة: مفيش وصفة مصرية")
+    assert "ANSWER" in out["answer"] and out["egypt_note"]
+
+
+def test_respond_node_no_note_when_egyptian_recipe_shown(monkeypatch, store):
+    from recipe_agent import graph
+
+    found = egypt_store.find(["فراخ"], top_k=1, lang="ar")
+    recipe = dict(found[0])
+    recipe["instructions"] = egypt_store.instructions(recipe["recipe_id"], "ar")
+    recipe["substitutions"] = []
+    req = UserRequest(ingredients=["فراخ"], language="ar")
+    monkeypatch.setattr(graph, "write_answer", lambda *a, **k: "ANSWER")
+    out = graph.respond_node({"request": req, "recipes": [recipe], "shopping": []})
+    # No note; only the guaranteed cost line is added to the writer's answer.
+    assert out["answer"].startswith("ANSWER") and not out.get("egypt_note")
+
+
+def test_fallback_answers_keep_the_note(monkeypatch):
+    from recipe_agent import graph
+
+    req = UserRequest(
+        ingredients=["فراخ"], exclude_ingredients=["milk"], max_minutes=30, language="ar"
+    )
+
+    def boom(*a, **k):
+        raise RuntimeError("quota")
+
+    monkeypatch.setattr(graph, "write_answer", boom)
+    out = graph.respond_node({"request": req, "recipes": [_intl_recipe()], "shopping": []})
+    assert out["fallback"] == "llm_error" and out["answer"].startswith("ملاحظة")
+
+    # The check step swaps a leaking answer for the plain one and keeps the note.
+    out2 = graph.check_node(
+        {
+            "request": req,
+            "recipes": [],
+            "shopping": [],
+            "answer": "Just add milk and stir.",
+            "verifier_report": {},
+            "egypt_note": out["egypt_note"],
+        }
+    )
+    assert out2["fallback"] == "check_failed" and out2["answer"].startswith("ملاحظة")

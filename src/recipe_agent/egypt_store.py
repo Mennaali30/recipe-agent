@@ -324,6 +324,53 @@ def find(ingredients, max_minutes=None, exclude=None, top_k: int = 5, lang: str 
     return strong[:top_k]
 
 
+def no_match_note(results, ingredients, max_minutes=None, exclude=None, lang: str = "ar"):
+    """One-line note (in the user's language) when none of the shown recipes is Egyptian.
+
+    Returns None when there is nothing to say: no recipes are shown, an Egyptian recipe
+    is already shown, or an Egyptian recipe still matches the same conditions (it only
+    ranked out of the shown list). The allergy filter is NEVER relaxed: the "closest"
+    suggestion only drops the time limit.
+    """
+    results = list(results or [])
+    if not results or any(r.get("egyptian") for r in results):
+        return None
+    try:
+        exact = find(ingredients, max_minutes=max_minutes, exclude=exclude, top_k=1, lang=lang)
+    except Exception:  # Egyptian data unavailable: nothing reliable to say
+        return None
+    if exact:
+        return None
+    ar = lang == "ar"
+    head = (
+        "ملاحظة: مفيش وصفة مصرية من مجموعتنا مطابقة لشروطك بالظبط، فالوصفات دي عالمية"
+        " (ومعهاش تكلفة بالجنيه)."
+        if ar
+        else "Note: no Egyptian recipe in our collection matches your exact conditions,"
+        " so the recipes here are international (no EGP cost)."
+    )
+    if max_minutes is not None:
+        relaxed = [
+            r for r in find(ingredients, max_minutes=None, exclude=exclude, top_k=3, lang=lang)
+            if r["total_minutes"]
+        ]
+        if relaxed:
+            recipe = relaxed[0]
+            minutes = int(recipe["total_minutes"])
+            if ar:
+                return (
+                    head
+                    + f" لو سمحتي بوقت أطول، أقرب وصفة مصرية هي: {recipe['name']}"
+                    f" (حوالي {minutes} دقيقة)."
+                )
+            return (
+                head
+                + f" If you allow more time, the closest Egyptian recipe is: {recipe['name']}"
+                f" (about {minutes} minutes)."
+            )
+    return head
+
+
 def ensure_cost_lines(answer: str, recipes, lang: str = "ar") -> str:
     """Append any missing Egyptian cost line, so the cost always reaches the answer."""
     missing = []

@@ -41,6 +41,7 @@ class GraphState(TypedDict, total=False):
     verifier_report: dict
     fallback: str
     plan_info: dict
+    egypt_note: str
 
 
 def parse_node(state: GraphState) -> dict:
@@ -211,8 +212,29 @@ def clarify_node(state: GraphState) -> dict:
     return {"answer": "\n\n".join(parts)}
 
 
+def _with_egypt_note(note, answer: str) -> str:
+    """The no-Egyptian-match note always sits at the top of the answer."""
+    return f"{note}\n\n{answer}" if note else answer
+
+
 def respond_node(state: GraphState) -> dict:
-    """Write the answer with the LLM; if that fails, build a plain answer from the data."""
+    """Write the answer with the LLM; if that fails, build a plain answer from the data.
+
+    When none of the verified recipes is Egyptian, a short code-written note (in the user's
+    language) is prepended: it says the shown recipes are international alternatives and
+    names the closest Egyptian recipe when only the time limit excluded it.
+    """
+    note = None
+    try:
+        note = egypt_store.no_match_note(
+            state["recipes"],
+            state["request"].ingredients,
+            max_minutes=state["request"].max_minutes,
+            exclude=state["request"].exclude_ingredients,
+            lang=state["request"].language,
+        )
+    except Exception:  # the note is a nicety; never lose the answer over it
+        log.exception("Egyptian no-match note skipped")
     try:
         text = write_answer(
             state["request"],
@@ -225,7 +247,7 @@ def respond_node(state: GraphState) -> dict:
         # The approximate cost of an Egyptian recipe always reaches the answer,
         # even if the writer dropped it.
         text = egypt_store.ensure_cost_lines(text, state["recipes"], state["request"].language)
-        return {"answer": text, "fallback": None}
+        return {"answer": _with_egypt_note(note, text), "fallback": None, "egypt_note": note}
     except Exception as exc:
         # Log the real error (quota, overload, key...) so it can be diagnosed,
         # while the user still gets the plain answer.
@@ -234,15 +256,19 @@ def respond_node(state: GraphState) -> dict:
             type(exc).__name__, exc,
         )
         return {
-            "answer": verifier.fallback_answer(
-                state["request"],
-                state["recipes"],
-                state["shopping"],
-                saved_exclusions=state.get("saved_exclusions"),
-                memory_event=state.get("memory_event"),
-                reason="llm_error",
+            "answer": _with_egypt_note(
+                note,
+                verifier.fallback_answer(
+                    state["request"],
+                    state["recipes"],
+                    state["shopping"],
+                    saved_exclusions=state.get("saved_exclusions"),
+                    memory_event=state.get("memory_event"),
+                    reason="llm_error",
+                ),
             ),
             "fallback": "llm_error",
+            "egypt_note": note,
         }
 
 
@@ -257,13 +283,16 @@ def check_node(state: GraphState) -> dict:
     if blocking:
         log.warning("answer check failed (%s): using the plain answer", blocking)
         return {
-            "answer": verifier.fallback_answer(
-                state["request"],
-                state["recipes"],
-                state["shopping"],
-                saved_exclusions=state.get("saved_exclusions"),
-                memory_event=state.get("memory_event"),
-                reason="check_failed",
+            "answer": _with_egypt_note(
+                state.get("egypt_note"),
+                verifier.fallback_answer(
+                    state["request"],
+                    state["recipes"],
+                    state["shopping"],
+                    saved_exclusions=state.get("saved_exclusions"),
+                    memory_event=state.get("memory_event"),
+                    reason="check_failed",
+                ),
             ),
             "fallback": "check_failed",
             "verifier_report": report,
