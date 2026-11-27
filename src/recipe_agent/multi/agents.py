@@ -53,6 +53,12 @@ _KW = [
 ]
 
 
+def keyword_topics(text: str) -> list:
+    """Every topic whose keywords appear in the message, in priority order (no LLM)."""
+    low = (text or "").lower()
+    return [intent for intent, pat in _KW if re.search(pat, low)]
+
+
 def keyword_route(text: str) -> RouteDecision:
     """Fallback router (no LLM): the first matching topic, else recipes."""
     lang = "ar" if re.search(r"[\u0600-\u06ff]", text or "") else "en"
@@ -173,7 +179,12 @@ class RecipesAgent(Specialist):
         except Exception as exc:
             log.exception("recipe pipeline failed")
             result.ok = False
-            result.answer = tr(lang, "معرفتش أجيب وصفات دلوقتي.", "I could not fetch recipes right now.")
+            from recipe_agent.llm_call import is_transient
+            if is_transient(exc):   # quota (429) or overloaded model (503)
+                result.answer = tr(lang, "الخدمة مشغولة أو وصلت لحد الاستخدام المجاني مؤقتاً. جرّبي تاني بعد شوية.",
+                                   "The service is busy or the free quota is used up for now. Please try again shortly.")
+            else:
+                result.answer = tr(lang, "معرفتش أجيب وصفات دلوقتي.", "I could not fetch recipes right now.")
         return result
 
 

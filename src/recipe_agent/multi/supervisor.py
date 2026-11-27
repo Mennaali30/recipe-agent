@@ -10,7 +10,7 @@ from typing import Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .agents import (AgentResult, BudgetAgent, BusinessAgent, CostAgent, PantryAgent, RecipesAgent,
-                     ROUTER_PROMPT, RouteDecision, ShoppingAgent, ProfileAgent, keyword_route, with_context)
+                     ROUTER_PROMPT, RouteDecision, ShoppingAgent, ProfileAgent, keyword_route, keyword_topics, with_context)
 from recipe_agent.services import HistoryService
 
 from .llm import llm_extract
@@ -34,8 +34,12 @@ class SupState(TypedDict, total=False):
 
 
 def build_supervisor(extract=None, session_factory=None, store_loader=None, recipe_pipeline=None,
-                     registry=None, today=None, memory=None, save_history=True):
-    """Compile the supervisor graph. Everything external is injectable (tests use fakes)."""
+                     registry=None, today=None, memory=None, save_history=True, router="llm"):
+    """Compile the supervisor graph. Everything external is injectable (tests use fakes).
+
+    router: "llm" always asks the LLM; "keywords" never does; "hybrid" (used by the app, to save free
+    quota) decides by keywords when the message matches one topic or none (none = recipes), and
+    asks the LLM only when it matches two or more topics."""
     extract = extract or llm_extract
     registry = registry or build_registry()
     if session_factory is None:
@@ -69,6 +73,11 @@ def build_supervisor(extract=None, session_factory=None, store_loader=None, reci
 
     def route(state: SupState) -> dict:
         text = state["text"]
+        if router in ("keywords", "hybrid"):
+            topics = keyword_topics(text)
+            if router == "keywords" or len(topics) <= 1:
+                d = keyword_route(text)
+                return {"pending": d.intents, "language": d.language, "results": [], "route_source": "keywords"}
         try:
             decision = extract(RouteDecision, ROUTER_PROMPT, with_context(text, make_ctx(state)))
             if isinstance(decision, dict):

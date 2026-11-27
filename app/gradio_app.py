@@ -1,4 +1,5 @@
 """Gradio chat UI for the Recipe Agent (Arabic / English)."""
+import os
 import sys
 import time
 from pathlib import Path
@@ -9,8 +10,12 @@ sys.path.insert(0, str(ROOT / "src"))
 import gradio as gr
 
 from recipe_agent import graph
+from recipe_agent.multi import app as supervisor_app
 
-TITLE = "Recipe Agent | مساعد الوصفات"
+TITLE = "Matbakhak AI | مطبخك"
+
+# RECIPE_AGENT_MODE=classic goes back to the old single pipeline (recipes only).
+MODE = os.getenv("RECIPE_AGENT_MODE", "supervisor").lower()
 
 DESCRIPTION = """
 اكتبي المكونات اللي عندك (بالعربي أو بالإنجليزي) ويمكن تضيفي وقت أو حساسية.
@@ -18,6 +23,10 @@ Tell me what ingredients you have, optionally a time limit or an allergy.
 
 لو عايزة أفتكر حساسيتك للمرات الجاية قولي: "افتكري إني عندي حساسية من ..." (ولمسحها: "انسي الحساسيات").
 To save an allergy say: "remember that I'm allergic to ..." (to clear: "forget my allergies").
+
+جديد / New: بتقدري كمان تسألي عن **تكلفة وصفة**، **قايمة شراء بالأسعار**، **المخزن (pantry)**،
+**خطة إنتاج وربح**، **الميزانية**، وتحفظي **تفضيلاتك**. You can also ask for a recipe cost, a priced
+shopping list, your pantry, a production/profit plan, a budget check, and save your preferences.
 
 **تنبيه / Note:** فلتر الحساسية بيعتمد على أسماء المكونات وخطوات الوصفة فقط،
 راجعي ملصقات المنتجات دايماً. قوايم المكونات في الداتا ممكن تبقى ناقصة أحياناً،
@@ -32,6 +41,8 @@ EXAMPLES = [
     "عندي فراخ وأرز وثوم وعايزة أكلة تخلص في نص ساعة",
     "عندي بطاطس وبيض وعندي حساسية من اللبن",
     "I have eggs, tomatoes and cheese. Under 20 minutes.",
+    "عايز كشري",
+    "تكلفة فراخ معصجة كام؟",
 ]
 
 QUOTA_MESSAGE = (
@@ -54,14 +65,15 @@ def _is_busy(text: str) -> bool:
 
 
 def respond(message, history, request: gr.Request):
-    """Each message is handled on its own; saved allergies come from the memory file.
-
-    Without a login, everyone who opens the app shares the "default" profile.
+    """The supervisor routes each message to the right agent and keeps this user's profile, pantry
+    and chat history. Without a login, everyone who opens the app shares the "default" user.
     """
     user_id = getattr(request, "username", None) or "default"
     for attempt in range(2):
         try:
-            return graph.answer(message, user_id=user_id)
+            if MODE == "classic":
+                return graph.answer(message, user_id=user_id)
+            return supervisor_app.answer(message, user_id=user_id)
         except Exception as exc:
             text = str(exc)
             if _is_quota(text):
