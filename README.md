@@ -200,10 +200,47 @@ src/recipe_agent/
   verifier.py    allergy re-check, answer check, plain fallback answer
   cache.py       answer cache
   evaluation.py  evaluation code
+  services/      Phase 4: deterministic services (units, pantry, cost, shopping, production, budget)
+  db/            Phase 4: SQLAlchemy models and engine (SQLite by default)
 app/gradio_app.py                chat UI
 notebooks/run_in_colab.ipynb     the Colab steps above
 examples/answers_cache.json      saved answers for the UI examples
 ```
+
+## Phase 4: deterministic services (no LLM, no network)
+
+The numbers layer that the agents will call later. Everything here is plain Python: costs, quantities, stock, profit. An LLM never does the arithmetic.
+
+- `services/units.py`: unit conversions (g, kg, ml, l, tbsp, tsp, cup, piece, clove, head, can, pinch; Arabic amount text too). Household units use the ingredient's row in the price map (grams per cup, per piece, density), so a cup of rice and a cup of flour differ. Reuses `egypt_parse` and `egypt_cost`.
+- `services/costing.py`: recipe cost and cost per serving, plus extra expenses (packaging, gas...). For the 150 curated recipes it gives the same numbers as `egypt_cost` (tested).
+- `services/pantry.py` + `db/`: per-user pantry with SQLAlchemy. Add, use, adjust, discard, expiry, low stock, and a transaction log. SQLite by default (`sqlite:///matbakhak.db`); set `RECIPE_AGENT_DB_URL` for PostgreSQL (for example `postgresql+psycopg://user:pass@host/db`, plus `pip install "psycopg[binary]"`).
+- `services/shopping.py`: merges duplicate ingredients, subtracts the pantry, groups by category, estimates the total.
+- `services/production.py`: N meals of a recipe: scaling, missing quantities, cost per meal, revenue, gross profit and margin when a selling price is given.
+- `services/budget.py`: budget check for a list of recipes (optionally only what is not in the pantry).
+
+Rules the code follows:
+
+- Every quantity and price is `verified` (exact metric quantity, or a sourced WFP / current web price), `estimated` (household unit, density, or a rough placeholder price) or `unknown`.
+- A price that is not in the price map stays `None`. It is never guessed. Totals then cover the priced lines only and say `complete = False`.
+- Profit and margin are only given when the whole cost is known (otherwise they would look better than they are). The budget check says `cannot_tell` when prices are missing, and `over_budget` only when the known part already exceeds the budget.
+- A recipe without servings cannot be scaled or costed per serving.
+- Unit mismatches are not forced: pantry stock in grams is not subtracted from a need counted in pieces; the item says so.
+
+```python
+from recipe_agent.db import init_db, make_engine, make_session_factory
+from recipe_agent.services import PantryService, plan_production, recipe_from_fifi, ExtraExpense
+from recipe_agent.egypt_store import load_store
+
+engine = make_engine(); init_db(engine)
+pantry = PantryService(make_session_factory(engine)())
+pantry.add_item("waad", "أرز", 1, "kg")
+recipe = recipe_from_fifi(next(iter(load_store()["entries"].values())),
+                          extra_expenses=[ExtraExpense(name="box", amount_egp=2, basis="per_meal")])
+plan = plan_production(recipe, 20, selling_price_per_meal=70, stock=pantry.stock_map("waad"))
+print(plan.cost_per_meal_egp, plan.margin_pct, plan.shopping.estimated_total_egp)
+```
+
+More detail: `docs/phase4-services.md`. Tests: `python -m pytest -q` (offline).
 
 ## Evaluation
 
