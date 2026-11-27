@@ -144,3 +144,26 @@ def test_gradio_quota_and_busy_messages_still_work(gradio_app, monkeypatch):
 
 def test_gradio_examples_and_title_updated(gradio_app):
     assert "عايز كشري" in gradio_app.EXAMPLES and "مطبخك" in gradio_app.TITLE
+
+
+# ---------------- dish name + conditions in one message ----------------
+def test_find_by_name_ignores_allergy_and_time_phrases():
+    from recipe_agent import egypt_store
+    base = [r["recipe_id"] for r in egypt_store.find_by_name("عايز كشري")[0]]
+    assert base
+    for text in ["عايزة كشري وعندي حساسية من اللبن", "عايز كشري عندي حساسية من الفول", "كشري بدون لبن",
+                 "عايزة كشري في اقل من ساعة", "I want koshari, I'm allergic to milk", "عايزة كشري، وعندي حساسية من اللبن"]:
+        got = [r["recipe_id"] for r in egypt_store.find_by_name(text, top_k=3)[0]]
+        assert set(got) == set(base), text
+
+
+def test_dish_with_allergy_phrase_goes_to_recipes_and_dish_lookup(monkeypatch):
+    from recipe_agent import graph
+    from recipe_agent.schemas import UserRequest
+    assert keyword_topics("عايزة كشري وعندي حساسية من اللبن") == []        # router: recipes
+    monkeypatch.setattr(graph, "parse_request", lambda t: UserRequest(language="ar", exclude_ingredients=["milk"]))
+    monkeypatch.setattr(graph, "write_answer", lambda *a, **k: "ANSWER")
+    monkeypatch.setattr(graph.memory, "get_exclusions", lambda uid="default": [])
+    graph.build_graph.cache_clear()
+    out = graph.run_agent("عايزة كشري وعندي حساسية من اللبن", "t")
+    assert out.get("recipes") and all(r["egyptian"] for r in out["recipes"])

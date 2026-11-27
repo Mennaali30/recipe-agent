@@ -342,6 +342,22 @@ def _name_tokens(text: str) -> list:
     return [x[2:] if x.startswith("ال") and len(x) > 4 else x for x in toks]
 
 
+# Where the dish name ends and the conditions start: "عايزة كشري وعندي حساسية من اللبن",
+# "koshari, I'm allergic to milk". Only the part before this is read as the dish name.
+_COND = re.compile(
+    r"(?:\s|^)(?:و|ف|ب)?(?:عندي|عندى|انا|أنا|i)?\s*(?:حساسي|حساسيه|allerg|i'm|i am|بدون|من غير|without|no\b|"
+    r"في اقل|في أقل|اقل من|أقل من|خلال|under|within|less than|بس\b|لكن|but\b)|[,،.;؛]",
+    re.I,
+)
+
+
+def _dish_part(text: str) -> str:
+    t = str(text or "")
+    m = _COND.search(t)
+    head = t[: m.start()] if m else t
+    return head if _name_tokens(head) else t
+
+
 def find_by_name(text: str, exclude=None, max_minutes=None, top_k: int = 3, lang: str = "ar"):
     """Look up curated Egyptian recipes by dish name in a free message ("عايز كشري").
 
@@ -352,7 +368,7 @@ def find_by_name(text: str, exclude=None, max_minutes=None, top_k: int = 3, lang
     of matching recipes that were removed because of the allergies.
     """
     filler = {w for w in _name_tokens(" ".join(DISH_FILLER))}
-    query = [t for t in _name_tokens(text) if t not in filler]
+    query = [t for t in _name_tokens(_dish_part(text)) if t not in filler]
     if not query:
         return [], []
     store = load_store()
