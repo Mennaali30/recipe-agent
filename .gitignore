@@ -227,3 +227,6 @@ data/raw/
 data/processed/
 chroma_db/
 data/cache/
+
+# Phase 4 pantry database (SQLite default)
+matbakhak.db
