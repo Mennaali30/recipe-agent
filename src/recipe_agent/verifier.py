@@ -2,6 +2,7 @@
 import re
 
 from recipe_agent import tools
+from recipe_agent.allergy import arabic_allergen_families, families_for_item
 from recipe_agent.retriever import get_recipe
 
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
@@ -84,6 +85,13 @@ def check_answer(request, recipes, answer):
         "", [], request.exclude_ingredients, [text]
     ):
         blocking.append("an allergen word appears in the answer")
+    elif request.exclude_ingredients:
+        wanted = set()
+        for item in request.exclude_ingredients:
+            wanted |= families_for_item(item)
+        arabic_hits = arabic_allergen_families(text) & wanted
+        if arabic_hits:
+            blocking.append("an Arabic allergen word appears in the answer")
 
     digits = re.sub(r"(?<=\d),(?=\d)", "", answer.translate(_ARABIC_DIGITS))
     numbers = set(re.findall(r"\d+(?:\.\d+)?", digits))
@@ -92,6 +100,8 @@ def check_answer(request, recipes, answer):
             ("calories", recipe["nutrition"]["calories"]),
             ("minutes", recipe["total_minutes"]),
         ):
+            if value is None:
+                continue  # unknown time: nothing to compare
             if str(value) not in numbers:
                 info.append(f"{recipe['name']}: {label} {value} not found in the answer")
     return blocking, info
@@ -117,6 +127,8 @@ _TEXT = {
         "forgotten": "Your saved allergies were cleared.",
         "allergy": "Allergy filtering checks ingredient names and recipe steps only; always check product labels.",
         "footer": "Times and nutrition values come from the recipe dataset and are approximate.",
+        "unknown_time": "unknown",
+        "memory_error": "Your saved allergies could not be read, so only the allergies in this message were applied. Please check them.",
         "empty": "No matching recipes were found. Try adding more ingredients or allowing more time.",
     },
     "ar": {
@@ -138,6 +150,8 @@ _TEXT = {
         "forgotten": "اتمسحت الحساسيات المحفوظة.",
         "allergy": "فلتر الحساسية بيعتمد على أسماء المكونات وخطوات الوصفة فقط، راجعي ملصقات المنتجات دايماً.",
         "footer": "الأوقات والقيم الغذائية من قاعدة بيانات الوصفات وهي تقريبية.",
+        "unknown_time": "غير معروف",
+        "memory_error": "معرفتش أقرا الحساسيات المحفوظة، فاتطبقت بس الحساسيات المذكورة في الرسالة دي. راجعيها.",
         "empty": "مفيش وصفات مطابقة. جرّبي تضيفي مكونات أو تسمحي بوقت أكبر.",
     },
 }
@@ -154,12 +168,16 @@ def fallback_answer(
         lines += [t["saved_now"], ""]
     elif memory_event == "forgotten":
         lines += [t["forgotten"], ""]
+    elif memory_event == "memory_error":
+        lines += [t["memory_error"], ""]
     if not recipes:
         lines += [t["empty"], ""]
     for r in recipes:
         n = r["nutrition"]
         lines.append(f"### {r['name']}")
-        lines.append(f"- {t['time']}: {r['total_minutes']} {t['min']} | {t['servings']}: {r['servings']}")
+        minutes = r["total_minutes"]
+        time_text = f"{minutes} {t['min']}" if minutes else t["unknown_time"]
+        lines.append(f"- {t['time']}: {time_text} | {t['servings']}: {r['servings']}")
         lines.append(f"- {t['cal']}: {n['calories']} | {t['protein']}: {n['protein_g']} g")
         lines.append(f"- {t['have']}: {', '.join(r['have']) or t['none']}")
         lines.append(f"- {t['missing']}: {', '.join(r['missing']) or t['none']}")

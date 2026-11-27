@@ -2,6 +2,7 @@
 allergy filtering and substitution candidates."""
 import re
 
+from recipe_agent.allergy import EXTRA_ENGLISH_TERMS
 from recipe_agent.retriever import get_recipe, search
 
 # Assumed to be available in any kitchen, so they are never reported as missing.
@@ -26,6 +27,19 @@ _PROCESSED = {
     "butter", "cream", "milk", "cheese", "flour", "sugar", "vinegar",
     "dressing", "seasoning", "extract", "mix", "instant", "cider",
 }
+
+
+# Two-word foods that are NOT the plain ingredient: "peanut butter" is not "butter",
+# "coconut milk" is not "milk", "sweet potato" is not "potato", "bell pepper" is not "pepper".
+_COMPOUND_FOODS = [
+    ("peanut", "butter"), ("almond", "butter"), ("cocoa", "butter"), ("apple", "butter"),
+    ("cashew", "butter"), ("coconut", "milk"), ("coconut", "cream"), ("almond", "milk"),
+    ("soy", "milk"), ("oat", "milk"), ("rice", "milk"), ("sweet", "potato"),
+    ("bell", "pepper"), ("chili", "pepper"), ("chile", "pepper"), ("cayenne", "pepper"),
+    ("red", "pepper"), ("green", "pepper"), ("jalapeno", "pepper"), ("hot", "pepper"),
+    ("sour", "cream"), ("ice", "cream"), ("cream", "cheese"), ("rice", "vinegar"),
+    ("coconut", "oil"), ("peanut", "oil"), ("sesame", "oil"), ("water", "chestnut"),
+]
 
 
 def _stem(token: str) -> str:
@@ -54,6 +68,17 @@ def _words(text) -> frozenset:
 
 
 _PANTRY = {normalize(p) for p in PANTRY}
+_COMPOUNDS = [frozenset(_stem(w) for w in c) for c in _COMPOUND_FOODS]
+_SPLIT_LIST = re.compile(r"\s*(?:,|/|&|\band\b|\bor\b)\s*")
+
+
+def _is_pantry(ingredient: str) -> bool:
+    """True if the ingredient is a pantry item, or a list of pantry items
+    such as 'salt and pepper' or 'salt & freshly ground black pepper'."""
+    if normalize(ingredient) in _PANTRY:
+        return True
+    parts = [p for p in _SPLIT_LIST.split(str(ingredient).lower()) if p.strip()]
+    return len(parts) > 1 and all(normalize(p) in _PANTRY for p in parts)
 
 
 def _group(*words) -> frozenset:
@@ -104,6 +129,17 @@ ALLERGEN_GROUPS = {
     "sesame": _group("sesame", "tahini", "hummus", "halva", "halvah"),
 }
 
+for _key, _words_ in EXTRA_ENGLISH_TERMS.items():
+    _extra = _group(*_words_)
+    ALLERGEN_GROUPS[_key] = ALLERGEN_GROUPS[_key] | _extra
+    if _key == "dairy":
+        for _alias in ("milk", "lactose"):
+            ALLERGEN_GROUPS[_alias] = ALLERGEN_GROUPS[_alias] | _extra
+    if _key == "wheat":
+        ALLERGEN_GROUPS["gluten"] = ALLERGEN_GROUPS["gluten"] | _extra
+    if _key == "peanut":
+        ALLERGEN_GROUPS["nut"] = ALLERGEN_GROUPS["nut"] | _extra
+
 # Multi-word forms that the word lists cannot catch (matched on the raw lowercase text).
 _HALF_AND_HALF = re.compile(r"half[\s-]*(?:and|&)[\s-]*half")
 ALLERGEN_PHRASES = {
@@ -150,6 +186,10 @@ def _matches(user: frozenset, ing: frozenset) -> bool:
         return False
     if user == ing:
         return True
+    for compound in _COMPOUNDS:
+        # one side is the compound food, the other side only shares part of it
+        if (compound <= user) != (compound <= ing) and (user & compound) and (ing & compound):
+            return False
     if user < ing:
         return not ((ing - user) & _PROCESSED)
     if ing < user:
@@ -163,7 +203,7 @@ def compare_ingredients(user_ingredients, recipe_ingredients, assume_pantry: boo
     have, missing = [], []
     for ing in recipe_ingredients:
         norm = normalize(ing)
-        if assume_pantry and norm in _PANTRY:
+        if assume_pantry and _is_pantry(ing):
             continue
         if any(_matches(u, norm) for u in user):
             have.append(ing)

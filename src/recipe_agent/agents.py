@@ -267,6 +267,9 @@ Rules:
   (list them) were applied, and that the user can ask to forget them.
 - If "memory_event" is "saved", say the allergies were saved for next time. If it is "forgotten",
   say the saved allergies were cleared.
+- If "memory_event" is "memory_error", say the saved allergies could not be read, only the allergies
+  in this message were applied, and the user should double-check.
+- If a recipe's "total_minutes" is null, say its time is unknown. Never write 0 minutes.
 - If "recipes" is empty, say no matching recipes were found and suggest adding more ingredients or
   allowing more time. Do not invent a recipe.
 - End with a combined shopping list if "shopping_list" is not empty.
