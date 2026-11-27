@@ -8,11 +8,12 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from recipe_agent.services import (ExtraExpense, IngredientInput, InsufficientStock, PantryService,
+from recipe_agent.services import (ExtraExpense, HistoryService, IngredientInput, InsufficientStock, PantryService,
+                                   ProfileService, ProfileUpdate,
                                    RecipeInput, UnitError, build_shopping_list, check_budget,
                                    convert, plan_production, recipe_cost, recipe_from_fifi,
                                    resolve_ingredient)
@@ -94,6 +95,15 @@ class EmptyArgs(BaseModel):
     pass
 
 
+class ProfileChangeArgs(BaseModel):
+    update: Optional[ProfileUpdate] = None
+    allergies: list[str] = Field(default_factory=list, description="Allergies to SAVE (only on an explicit request).")
+
+
+class ProfileClearArgs(BaseModel):
+    what: Literal["allergies", "profile", "history", "all"]
+
+
 # ---------------------------------------------------------------- plumbing
 @dataclass
 class ToolResult:
@@ -110,6 +120,9 @@ class ToolContext:
     session_factory: Optional[Callable] = None    # () -> SQLAlchemy Session
     store_loader: Optional[Callable] = None       # () -> egypt_store-like {"entries": {...}}
     today: Optional[date] = None
+    message: str = ""                              # the raw user message being handled
+    history: list = field(default_factory=list)    # recent HistoryEntry items, oldest first
+    memory: Any = None                             # allergy memory module (default recipe_agent.memory)
 
 
 @dataclass
@@ -332,6 +345,38 @@ def t_pantry_low(ctx, a: EmptyArgs):
         return PantryService(s).low_stock(ctx.user_id)
 
 
+def t_profile_show(ctx, a: EmptyArgs):
+    with _Session(ctx) as s:
+        return ProfileService(s, ctx.memory).get(ctx.user_id)
+
+
+def t_profile_update(ctx, a: ProfileChangeArgs):
+    has_update = a.update is not None and bool(a.update.model_dump(exclude_none=True))
+    if not has_update and not a.allergies:
+        raise ToolError("bad_args", "nothing to save")
+    with _Session(ctx) as s:
+        svc = ProfileService(s, ctx.memory)
+        if has_update:
+            svc.update(ctx.user_id, a.update)
+        if a.allergies:
+            svc.add_allergies(ctx.user_id, a.allergies)
+        return svc.get(ctx.user_id)
+
+
+def t_profile_clear(ctx, a: ProfileClearArgs):
+    done = {}
+    with _Session(ctx) as s:
+        svc = ProfileService(s, ctx.memory)
+        if a.what in ("allergies", "all"):
+            svc.clear_allergies(ctx.user_id)
+            done["allergies"] = True
+        if a.what in ("profile", "all"):
+            done["profile"] = svc.delete_profile(ctx.user_id)
+        if a.what in ("history", "all"):
+            done["history_messages"] = HistoryService(s).clear(ctx.user_id)
+    return done
+
+
 def build_registry() -> ToolRegistry:
     return ToolRegistry([
         ToolSpec("convert_units", "Convert a quantity of an ingredient to grams / ml / count.", ConvertArgs, t_convert),
@@ -343,5 +388,8 @@ def build_registry() -> ToolRegistry:
         ToolSpec("pantry_use", "Take stock out of the pantry (fails without changes if not enough).", PantryUseArgs, t_pantry_use, writes=True),
         ToolSpec("pantry_list", "List the pantry.", EmptyArgs, t_pantry_list),
         ToolSpec("pantry_expiring", "Expired and soon-to-expire items.", PantryReadArgs, t_pantry_expiring),
+        ToolSpec("profile_show", "Show the user's saved profile and saved allergies.", EmptyArgs, t_profile_show),
+        ToolSpec("profile_update", "Save profile preferences and/or allergies the user asked to save.", ProfileChangeArgs, t_profile_update, writes=True),
+        ToolSpec("profile_clear", "Delete saved allergies, profile and/or chat history.", ProfileClearArgs, t_profile_clear, writes=True),
         ToolSpec("pantry_low_stock", "Items at or below their low-stock threshold.", EmptyArgs, t_pantry_low),
     ])

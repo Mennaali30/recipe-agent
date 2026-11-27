@@ -6,10 +6,11 @@ from .pantry import InsufficientStock, PantryService
 from .production import min_price_for_margin, plan_production
 from .schemas import (BudgetCheck, ExtraExpense, IngredientInput, Measure, ProductionPlan,
                       RecipeCost, RecipeInput, ShoppingList)
+from .profile import HistoryService, ProfileService, ProfileUpdate, ProfileView
 from .shopping import build_shopping_list
 from .units import UnitError, convert, convert_text, resolve_ingredient
 
-__all__ = ["check_budget", "recipe_cost", "recipe_from_fifi", "InsufficientStock", "PantryService",
+__all__ = ["HistoryService", "ProfileService", "ProfileUpdate", "ProfileView", "check_budget", "recipe_cost", "recipe_from_fifi", "InsufficientStock", "PantryService",
            "min_price_for_margin", "plan_production", "BudgetCheck", "ExtraExpense",
            "IngredientInput", "Measure", "ProductionPlan", "RecipeCost", "RecipeInput",
            "ShoppingList", "build_shopping_list", "UnitError", "convert", "convert_text",

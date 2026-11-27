@@ -13,12 +13,12 @@ from pydantic import BaseModel, Field
 
 from .tools import (BudgetArgs, BudgetItem, ConvertArgs, CostArgs, PantryChangeArgs, PantryEntry,
                     PantryReadArgs, PantryUseArgs, ProductionArgs, RecipeRef, ShoppingArgs,
-                    ShoppingRecipe, ToolContext, ToolRegistry, ToolResult)
-from recipe_agent.services import ExtraExpense
+                    ShoppingRecipe, ToolContext, ToolRegistry, ToolResult, ProfileChangeArgs, ProfileClearArgs, EmptyArgs)
+from recipe_agent.services import ExtraExpense, ProfileUpdate
 
 log = logging.getLogger(__name__)
 
-Intent = Literal["recipes", "pantry", "cost", "shopping", "business", "budget"]
+Intent = Literal["recipes", "pantry", "cost", "shopping", "business", "budget", "profile"]
 
 
 # ---------------------------------------------------------------- routing
@@ -31,7 +31,10 @@ class RouteDecision(BaseModel):
                      "cost: price or cost per serving of a dish, unit conversion. "
                      "shopping: shopping list. "
                      "business: produce N meals, selling price, profit, margin. "
-                     "budget: does it fit a budget in EGP."))
+                     "budget: does it fit a budget in EGP. "
+                     "profile: save / show / delete the user's preferences (family size, favorite cuisines, "
+                     "dislikes, diet, usual time limit, budget, business name), save or clear allergies on "
+                     "request, show or delete the chat history."))
     language: Literal["ar", "en"] = "en"
 
 
@@ -41,6 +44,7 @@ order they must run. Use two only when the message clearly asks for two differen
 to "ar" if the user wrote Arabic. If unsure, choose recipes."""
 
 _KW = [
+    ("profile", r"احفظي|احفظ |افتكري|انسي|امسحي|بروفايل|profile|remember|forget|save my|حجم العيلة|عدد افراد|عدد أفراد|family size|تفضيلات|preferences|clear (my )?history|مسح المحادثة"),
     ("budget", r"ميزاني|budget"),
     ("business", r"انتاج|إنتاج|production|ربح|profit|margin|هامش|سعر البيع|selling price|اجهز \d+|\d+ وجب"),
     ("shopping", r"قايمة شراء|قائمة شراء|قايمه شراء|shopping list|اشتري|المطلوب شراءه|shopping"),
@@ -102,6 +106,17 @@ def tool_failure_text(res: ToolResult, lang) -> tuple:
     return tr(lang, "حصلت مشكلة وأنا بحسب. جربي تاني.", "Something went wrong while calculating. Please try again."), False
 
 
+def with_context(text: str, ctx) -> str:
+    """The message, preceded by the last few turns so that "it" / "that recipe" can be resolved."""
+    hist = getattr(ctx, "history", None) or []
+    if not hist:
+        return text
+    lines = [f"[{h.role}] {h.text[:300]}" for h in hist[-6:]]
+    return ("Earlier messages (oldest first), only to resolve references such as 'it' or 'that recipe'. "
+            "Extract values from the CURRENT message only.\n" + "\n".join(lines)
+            + "\n\nCURRENT message:\n" + text)
+
+
 class Specialist:
     name = ""
     tools: set = set()
@@ -119,7 +134,7 @@ class Specialist:
     def run(self, text: str, lang: str, ctx: ToolContext) -> AgentResult:
         result = AgentResult(self.name)
         try:
-            args = self.extract(self.schema, self.prompt, text)
+            args = self.extract(self.schema, self.prompt, with_context(text, ctx))
         except Exception as exc:
             log.warning("%s agent could not read the request: %s: %s", self.name, type(exc).__name__, exc)
             result.ok = False
@@ -422,12 +437,21 @@ class BudgetRequest(BaseModel):
 
 class BudgetAgent(Specialist):
     name = "budget"
-    tools = {"budget_check"}
+    tools = {"budget_check", "profile_show"}
     schema = BudgetRequest
     prompt = ("Extract the dishes (with number of meals each) and the budget in EGP. use_pantry is true only if "
               "the user says to count what they already have. Leave unstated values null.")
 
     def handle(self, a: BudgetRequest, lang, ctx, result):
+        saved_note = ""
+        if a.budget_egp is None:
+            prof = self.call("profile_show", EmptyArgs(), ctx, result)
+            if prof.ok and prof.data.budget_egp is not None:
+                a.budget_egp = prof.data.budget_egp
+                per = {"daily": tr(lang, "اليومية", "daily"), "weekly": tr(lang, "الأسبوعية", "weekly"),
+                       "monthly": tr(lang, "الشهرية", "monthly")}.get(prof.data.budget_period or "", "")
+                saved_note = tr(lang, f"(استخدمت ميزانيتك المحفوظة {per}: {egp(a.budget_egp, lang)})",
+                                f"(used your saved {per} budget: {egp(a.budget_egp, lang)})").replace("  ", " ")
         if a.budget_egp is None:
             result.needs_input = True
             result.answer = tr(lang, "ميزانيتك كام جنيه؟", "What is your budget in EGP?")
@@ -454,4 +478,94 @@ class BudgetAgent(Specialist):
         if b.unpriced:
             out.append(tr(lang, "من غير سعر: ", "No price: ") + ", ".join(b.unpriced))
         out.append(STATUS_NOTE[lang])
+        if saved_note:
+            out.insert(0, saved_note)
         result.answer = "\n".join(out)
+
+
+# ---------------------------------------------------------------- profile and history
+class ProfileRequest(BaseModel):
+    action: Literal["show", "update", "clear"]
+    update: Optional[ProfileUpdate] = Field(default=None, description="Preferences to save, only what the user stated.")
+    allergies: list[str] = Field(default_factory=list,
+                                 description="Allergies the user asks to SAVE / remember, as short English food words (milk, egg, peanut...).")
+    clear_what: Optional[Literal["allergies", "profile", "history", "all"]] = Field(
+        default=None, description="For action=clear: what the user explicitly asked to delete.")
+
+
+class ProfileAgent(Specialist):
+    name = "profile"
+    tools = {"profile_show", "profile_update", "profile_clear"}
+    schema = ProfileRequest
+    prompt = ("Extract a profile request. show = display what is saved. update = the user asks to save "
+              "preferences or allergies (family size, favorite cuisines, disliked ingredients, diet, usual "
+              "time limit in minutes, budget with its period, business name/type, mode household or business). "
+              "clear = the user explicitly asks to delete saved allergies, the profile or the chat history. "
+              "Only extract what the user states; never invent a value. Allergies only when asked to save them.")
+
+    @staticmethod
+    def _fmt(p, lang) -> str:
+        def lst(x):
+            return "، ".join(x) if lang == "ar" and x else (", ".join(x) if x else tr(lang, "غير محدد", "not set"))
+
+        def val(x, suffix=""):
+            return f"{x:g}{suffix}" if isinstance(x, (int, float)) else (x or tr(lang, "غير محدد", "not set"))
+        allergies = (tr(lang, "تعذّرت قراءة الحساسيات المحفوظة", "could not read the saved allergies")
+                     if p.allergies is None else lst(p.allergies))
+        rows = [
+            (tr(lang, "الحساسيات", "Allergies"), allergies),
+            (tr(lang, "الوضع", "Mode"), tr(lang, "بيزنس" if p.mode == "business" else "بيت", p.mode)),
+            (tr(lang, "عدد أفراد العيلة", "Family size"), val(p.family_size)),
+            (tr(lang, "المطابخ المفضلة", "Favorite cuisines"), lst(p.favorite_cuisines)),
+            (tr(lang, "مكونات مش بتحبيها", "Disliked ingredients"), lst(p.disliked_ingredients)),
+            (tr(lang, "نظام غذائي", "Diet"), lst(p.diet)),
+            (tr(lang, "الوقت المفضل (دقيقة)", "Preferred time (min)"), val(p.max_minutes)),
+            (tr(lang, "الميزانية", "Budget"),
+             (f"{p.budget_egp:g} " + tr(lang, "جنيه", "EGP") + (f" ({p.budget_period})" if p.budget_period else ""))
+             if p.budget_egp is not None else tr(lang, "غير محدد", "not set")),
+        ]
+        if p.business_name or p.business_type or p.mode == "business":
+            rows += [(tr(lang, "اسم البيزنس", "Business name"), val(p.business_name)),
+                     (tr(lang, "نوع البيزنس", "Business type"), val(p.business_type))]
+        return "\n".join(f"- {k}: {v}" for k, v in rows)
+
+    def handle(self, a: ProfileRequest, lang, ctx, result):
+        if a.action == "show":
+            res = self.call("profile_show", EmptyArgs(), ctx, result)
+            if not res.ok:
+                return self.fail(res, lang, result)
+            result.data = res.data
+            result.answer = tr(lang, "اللي محفوظ عندي:", "What I have saved:") + "\n" + self._fmt(res.data, lang)
+            return
+        if a.action == "update":
+            allergies = list(a.allergies)
+            try:  # the allergy words in the message are added by code, whatever the LLM extracted
+                from recipe_agent.allergy import extract_allergies
+                if allergies:
+                    allergies = list(dict.fromkeys([*allergies, *extract_allergies(ctx.message)]))
+            except Exception:
+                log.exception("allergy extraction skipped")
+            res = self.call("profile_update", ProfileChangeArgs(update=a.update, allergies=allergies), ctx, result)
+            if not res.ok:
+                if res.error_code == "bad_args":
+                    result.needs_input = True
+                    result.answer = tr(lang, "قوليلي إيه اللي أحفظه (مثلاً: عدد أفراد العيلة 5).",
+                                       "Tell me what to save (for example: family size 5).")
+                    return
+                return self.fail(res, lang, result)
+            result.data = res.data
+            result.answer = tr(lang, "تمام، حفظت. دلوقتي عندي:", "Saved. I now have:") + "\n" + self._fmt(res.data, lang)
+            return
+        if not a.clear_what:
+            result.needs_input = True
+            result.answer = tr(lang, "عايزة أمسح إيه بالظبط: الحساسيات، البروفايل، ولا المحادثات؟",
+                               "What exactly should I delete: allergies, profile or chat history?")
+            return
+        res = self.call("profile_clear", ProfileClearArgs(what=a.clear_what), ctx, result)
+        if not res.ok:
+            return self.fail(res, lang, result)
+        result.data = res.data
+        names = {"allergies": tr(lang, "الحساسيات", "allergies"), "profile": tr(lang, "البروفايل", "profile"),
+                 "history_messages": tr(lang, "المحادثات", "chat history")}
+        done = ", ".join(names[k] for k in res.data) if lang != "ar" else "، ".join(names[k] for k in res.data)
+        result.answer = tr(lang, f"تمام، مسحت: {done}.", f"Done, deleted: {done}.")

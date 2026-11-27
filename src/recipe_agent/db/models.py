@@ -2,7 +2,7 @@
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -53,3 +53,33 @@ class InventoryTransaction(Base):
     note: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     item: Mapped[PantryItem] = relationship(back_populates="transactions")
+
+
+class UserProfile(Base):
+    """Household preferences and business profile. One row per user. Allergies are NOT stored
+    here: they stay in the memory file (recipe_agent.memory), which the recipe search already uses."""
+    __tablename__ = "user_profiles"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(20), default="household")   # household / business
+    family_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    favorite_cuisines: Mapped[list] = mapped_column(JSON, default=list)
+    disliked_ingredients: Mapped[list] = mapped_column(JSON, default=list)
+    diet: Mapped[list] = mapped_column(JSON, default=list)
+    max_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    budget_egp: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    budget_period: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # daily / weekly / monthly
+    business_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    business_type: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    currency: Mapped[str] = mapped_column(String(10), default="EGP")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class ChatMessage(Base):
+    """Saved conversation history (what the user wrote and what the assistant answered)."""
+    __tablename__ = "chat_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(10))          # user / assistant
+    text: Mapped[str] = mapped_column(Text)
+    agent: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)   # e.g. "cost,shopping"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
