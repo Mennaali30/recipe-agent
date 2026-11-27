@@ -6,6 +6,7 @@ priced lines and `complete` is False.
 from typing import Optional
 
 from ..egypt_parse import parse_servings
+from ..price_range import make_range
 from .schemas import (CostLine, ExtraExpense, IngredientInput, Measure, RecipeCost, RecipeInput,
                       worst_status)
 from .units import (Ingredient, convert, convert_text, price_of, resolve_ingredient)
@@ -40,6 +41,7 @@ def cost_line(ing_in: IngredientInput, factor: float = 1.0) -> tuple:
         p = price_of(measure, ing)
         line.cost_egp, line.price_egp_per_kg = p.cost_egp, p.price_egp_per_kg
         line.price_source, line.price_status = p.source, p.status
+        line.price_reliability, line.price_date = p.reliability, p.price_date
         line.status = (worst_status([measure.status, p.status])
                        if p.cost_egp is not None else "unknown")
     return line, ing
@@ -88,7 +90,13 @@ def recipe_cost(recipe: RecipeInput, factor: float = 1.0,
         notes.append("servings unknown; cost per serving not available")
     if unpriced:
         notes.append("some ingredients have no price; total covers the priced ones only")
+    rng = make_range([{"cost": l.cost_egp, "source": l.price_source, "reliability": l.price_reliability,
+                       "price_date": l.price_date} for l in lines if not l.to_taste], fixed=extras) if total is not None else None
     return RecipeCost(recipe=recipe.name, servings=meals, lines=lines, ingredient_cost_egp=cost,
+                      low_egp=rng["low"] if rng else None, high_egp=rng["high"] if rng else None,
+                      per_serving_low_egp=round(rng["low"] / meals, 2) if (rng and meals) else None,
+                      per_serving_high_egp=round(rng["high"] / meals, 2) if (rng and meals) else None,
+                      price_label=rng["label_key"] if rng else None, stale_prices=rng["stale"] if rng else False,
                       extras_egp=extras, total_egp=total, per_serving_egp=per,
                       complete=complete and (meals is not None or not any(
                           e.basis == "per_meal" for e in recipe.extra_expenses)),

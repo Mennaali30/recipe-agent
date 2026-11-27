@@ -73,6 +73,8 @@ class CostLine(BaseModel):
     cost_egp: Optional[float] = None
     price_egp_per_kg: Optional[float] = None
     price_source: Optional[str] = None      # wfp / current_web / estimated
+    price_reliability: Optional[str] = None  # high / medium / low (web prices)
+    price_date: Optional[str] = None
     price_status: Status = "unknown"
     status: Status = "unknown"               # quantity status combined with price status
     note: str = ""
@@ -93,6 +95,12 @@ class RecipeCost(BaseModel):
     status: Status = "unknown"
     notes: list[str] = Field(default_factory=list)
     approximate: bool = True
+    low_egp: Optional[float] = None                  # price range (price plan, step 3); total_egp stays the point value
+    high_egp: Optional[float] = None
+    per_serving_low_egp: Optional[float] = None
+    per_serving_high_egp: Optional[float] = None
+    price_label: Optional[str] = None                # market / approx / rough
+    stale_prices: bool = False
 
 
 class ShoppingItem(BaseModel):
@@ -106,6 +114,8 @@ class ShoppingItem(BaseModel):
     est_cost_egp: Optional[float] = None
     price_status: Status = "unknown"
     price_source: Optional[str] = None
+    price_reliability: Optional[str] = None
+    price_date: Optional[str] = None
     quantity_status: Status = "unknown"
     to_taste: bool = False
     note: str = ""
@@ -119,6 +129,10 @@ class ShoppingList(BaseModel):
     unknown_quantities: list[str] = Field(default_factory=list)
     price_status: Status = "unknown"
     currency: str = "EGP"
+    low_egp: Optional[float] = None
+    high_egp: Optional[float] = None
+    price_label: Optional[str] = None
+    stale_prices: bool = False
 
 
 class ProductionPlan(BaseModel):

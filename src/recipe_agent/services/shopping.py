@@ -5,6 +5,7 @@ A pantry stock in another unit (grams vs pieces) is not subtracted; the item say
 """
 from typing import Optional
 
+from ..price_range import make_range
 from .schemas import CostLine, Measure, ShoppingItem, ShoppingList, worst_status
 from .units import Ingredient, price_of, resolve_ingredient
 
@@ -66,6 +67,7 @@ def build_shopping_list(lines, stock=None) -> ShoppingList:
         if to_buy > 0:
             p = price_of(Measure(value=to_buy, unit=unit, status="verified"), ing)
             item.est_cost_egp, item.price_source, item.price_status = p.cost_egp, p.source, p.status
+            item.price_reliability, item.price_date = p.reliability, p.price_date
         else:
             item.est_cost_egp, item.price_status = 0.0, "verified"
             item.note = (note + "; " if note else "") + "covered by pantry"
@@ -85,5 +87,9 @@ def build_shopping_list(lines, stock=None) -> ShoppingList:
     unk = [i.name for i in items if not i.to_taste and i.needed is None]
     complete = total is not None and not unpriced and not unk
     status = worst_status([i.price_status for i in priced]) if priced else ("verified" if complete else "unknown")
+    rng = make_range([{"cost": i.est_cost_egp, "source": i.price_source, "reliability": i.price_reliability,
+                       "price_date": i.price_date} for i in priced if i.price_source]) if priced else None
     return ShoppingList(items=items, estimated_total_egp=total, total_complete=complete,
+                        low_egp=rng["low"] if rng else None, high_egp=rng["high"] if rng else None,
+                        price_label=rng["label_key"] if rng else None, stale_prices=rng["stale"] if rng else False,
                         unpriced=unpriced, unknown_quantities=unk, price_status=status)

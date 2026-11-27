@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from .tools import (BudgetArgs, BudgetItem, ConvertArgs, CostArgs, PantryChangeArgs, PantryEntry,
                     PantryReadArgs, PantryUseArgs, ProductionArgs, RecipeRef, ShoppingArgs,
                     ShoppingRecipe, ToolContext, ToolRegistry, ToolResult, ProfileChangeArgs, ProfileClearArgs, EmptyArgs)
+from recipe_agent.price_range import label_text, range_text
 from recipe_agent.services import ExtraExpense, ProfileUpdate
 
 log = logging.getLogger(__name__)
@@ -302,10 +303,15 @@ def format_cost(c, lang) -> str:
     if c.total_egp is None:
         out = [tr(lang, f"مقدرتش أحسب تكلفة {c.recipe}: مفيش أسعار للمكونات.", f"I could not cost {c.recipe}: no ingredient prices.")]
     else:
-        out = [tr(lang, f"تكلفة {c.recipe}: {egp(c.total_egp, lang)}", f"Cost of {c.recipe}: {egp(c.total_egp, lang)}")]
+        if c.low_egp is not None:
+            rng = {"label_key": c.price_label, "stale": c.stale_prices}
+            total = f"{range_text(c.low_egp, c.high_egp, lang)} ({label_text(rng, lang)})"
+        else:
+            total = egp(c.total_egp, lang)
+        out = [tr(lang, f"تكلفة {c.recipe}: {total}", f"Cost of {c.recipe}: {total}")]
         if c.per_serving_egp is not None:
-            out.append(tr(lang, f"للفرد: {egp(c.per_serving_egp, lang)} ({c.servings:g} أفراد)",
-                          f"Per serving: {egp(c.per_serving_egp, lang)} ({c.servings:g} servings)"))
+            per = range_text(c.per_serving_low_egp, c.per_serving_high_egp, lang) if c.per_serving_low_egp is not None else egp(c.per_serving_egp, lang)
+            out.append(tr(lang, f"للفرد: {per} ({c.servings:g} أفراد)", f"Per serving: {per} ({c.servings:g} servings)"))
         if c.extras_egp:
             out.append(tr(lang, f"منها مصاريف إضافية: {egp(c.extras_egp, lang)}", f"Includes extra expenses: {egp(c.extras_egp, lang)}"))
     if c.unpriced:
@@ -360,9 +366,14 @@ def format_shopping(sl, lang) -> str:
         elif not i.to_buy:
             out.append(f"- {i.name}: {tr(lang, 'موجود في المخزن', 'covered by pantry')}")
         else:
-            cost = f", ~{egp(i.est_cost_egp, lang)}" if i.est_cost_egp is not None else f", {tr(lang, 'من غير سعر', 'no price')}"
+            guess = tr(lang, " (تقديري)", " (estimated)") if i.price_source == "estimated" else ""
+            cost = f", ~{egp(i.est_cost_egp, lang)}{guess}" if i.est_cost_egp is not None else f", {tr(lang, 'من غير سعر', 'no price')}"
             out.append(f"- {i.name}: {i.to_buy:g} {i.unit}{cost}")
-    if sl.estimated_total_egp is not None:
+    if sl.low_egp is not None:
+        rng = {"label_key": sl.price_label, "stale": sl.stale_prices}
+        shown = f"{range_text(sl.low_egp, sl.high_egp, lang)} ({label_text(rng, lang)})"
+        out.append("\n" + tr(lang, f"الإجمالي المعروف: {shown}", f"Known total: {shown}"))
+    elif sl.estimated_total_egp is not None:
         out.append("\n" + tr(lang, f"الإجمالي المعروف: {egp(sl.estimated_total_egp, lang)}", f"Known total: {egp(sl.estimated_total_egp, lang)}"))
     if not sl.total_complete:
         out.append(tr(lang, "الإجمالي ناقص: فيه أصناف من غير سعر أو كمية.", "The total is incomplete: some items have no price or quantity."))

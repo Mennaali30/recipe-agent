@@ -100,7 +100,7 @@ def test_cost_line_names_the_price_kind(store):
     assert "Approx. cost" in found[0]["cost_text"]
     assert any(
         kind in found[0]["cost_text"]
-        for kind in ("WFP price", "current market price", "rough estimate")
+        for kind in ("market prices", "approximate prices", "rough estimate")
     )
 
 
@@ -424,7 +424,7 @@ def test_priced_shopping_merges_prefix_and_al_duplicates_and_adds_prices(monkeyp
     tomato = [l for l in out if "طماطم" in l and "الإجمالي" not in l]
     assert len(tomato) == 1 and "6.75 جنيه" in tomato[0] and "كوبان + نص كوب" in tomato[0]
     assert any("فلفل حار" in l and "السعر غير متاح" in l for l in out)
-    assert out[-1].startswith("الإجمالي التقريبي: 6.75 جنيه") and "ملهاش سعر" in out[-1]
+    assert out[-1].startswith("الإجمالي التقريبي: حوالي ") and "ملهاش سعر" in out[-1]    # a range now (price plan, step 3)
 
 
 def test_priced_shopping_unpriced_part_makes_the_merged_item_unpriced(monkeypatch):
@@ -440,7 +440,7 @@ def test_priced_shopping_english_and_non_egyptian_items_have_no_invented_price(m
                                  {"recipe_id": 12345, "missing": ["Garlic", "garlic"]}], "en")
     assert out[0] == "rice (1 cup): about 6.60 EGP"
     assert out[1] == "Garlic"                       # international recipe: name only, deduplicated
-    assert out[-1] == "Approximate total: 6.60 EGP"
+    assert out[-1].startswith("Approximate total: about ") and "EGP" in out[-1]
 
 
 def test_priced_shopping_real_recipe_prices_match_cost_lines():
@@ -449,7 +449,9 @@ def test_priced_shopping_real_recipe_prices_match_cost_lines():
     entry = egypt_store.get_recipe(found[0]["recipe_id"])
     priced_missing = [l["cost_egp"] for l in entry["cost"]["lines"]
                       if l["name"] in found[0]["missing"] and l["cost_egp"] is not None]
-    assert out[-1].startswith(f"الإجمالي التقريبي: {sum(priced_missing):.2f} جنيه")
+    import re
+    lo, hi = (float(x) for x in re.search(r"حوالي ([\d.]+) إلى ([\d.]+) جنيه", out[-1]).groups())
+    assert lo <= sum(priced_missing) <= hi          # the old point total sits inside the shown range
     assert any("مكرونة" in l and "14.92 جنيه" in l for l in out)
     assert len({l.split(" (")[0].split(" - ")[0] for l in out[:-1]}) == len(out) - 1   # no repeated item
 

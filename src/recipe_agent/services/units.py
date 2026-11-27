@@ -166,6 +166,8 @@ class Price:
     price_egp_per_kg: Optional[float]
     source: Optional[str]
     status: Status
+    reliability: Optional[str] = None
+    price_date: Optional[str] = None
 
 
 def price_of(measure: Measure, ing: Ingredient) -> Price:
@@ -176,4 +178,5 @@ def price_of(measure: Measure, ing: Ingredient) -> Price:
     if measure.value is None or measure.unit != "g" or ppk is None:
         return Price(None, ppk, None, "unknown")
     src = row["price_source"]
-    return Price(round(measure.value / 1000 * ppk, 2), ppk, src, PRICE_STATUS.get(src, "estimated"))
+    return Price(round(measure.value / 1000 * ppk, 2), ppk, src, PRICE_STATUS.get(src, "estimated"),
+                 row.get("current_price_reliability") or None, row.get("current_price_date") or None)

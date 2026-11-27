@@ -8,10 +8,11 @@ reliability (high|medium|low), note (optional).
 import csv
 import io
 import math
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from .egypt_cost import DEFAULT_MAP
+from .price_range import STALE_DAYS, parse_date  # noqa: F401  (shared with the range code)
 
 TYPES = {"retail", "wholesale", "festival retail"}
 RELIABILITY = {"high", "medium", "low"}
@@ -19,7 +20,6 @@ UPDATE_COLUMNS = ["key", "price_egp_per_kg", "source_url", "date", "type", "reli
 MAX_PRICE = 20000.0        # EGP per kg; saffron-level prices are below this
 MAX_AGE_DAYS = 120         # a source older than this is refused
 JUMP_FACTOR = 5.0          # a price 5x higher or lower than the current one needs --force
-STALE_DAYS = 30            # a price older than this is shown as "old" (step 3)
 
 
 def read_rows(path=None):
@@ -45,13 +45,6 @@ def read_updates(path):
         if missing:
             raise ValueError("update file is missing columns: " + ", ".join(missing))
         return [{k: (v or "").strip() for k, v in r.items()} for r in rd if any((v or "").strip() for v in r.values())]
-
-
-def parse_date(text):
-    try:
-        return datetime.strptime(text, "%Y-%m-%d").date()
-    except (TypeError, ValueError):
-        return None
 
 
 def validate_update(u: dict, by_key: dict, today: date, force: bool = False) -> list:

@@ -7,6 +7,7 @@ from recipe_agent import egypt_store
 
 log = logging.getLogger(__name__)
 from recipe_agent.allergy import EXTRA_ENGLISH_TERMS
+from recipe_agent.price_range import label_text, make_range, range_text
 from recipe_agent.retriever import get_recipe, search
 from recipe_agent.utils import fahrenheit_to_celsius
 
@@ -277,7 +278,7 @@ def priced_shopping(recipes, lang: str = "ar") -> list:
             key = tuple(sorted(egypt_store._name_tokens(clean)))
             item = merged.get(key)
             if item is None:
-                item = merged[key] = {"name": clean, "amounts": [], "cost": 0.0, "priced": True}
+                item = merged[key] = {"name": clean, "amounts": [], "cost": 0.0, "priced": True, "parts": []}
                 order.append(key)
             if line.get("amount_text") and line["amount_text"] not in item["amounts"]:
                 item["amounts"].append(line["amount_text"])
@@ -285,13 +286,18 @@ def priced_shopping(recipes, lang: str = "ar") -> list:
                 item["priced"] = False
             else:
                 item["cost"] += line["cost_egp"]
-    out, total, unpriced = [], 0.0, 0
+                item["parts"].append({"cost": line["cost_egp"], "source": line.get("price_source"),
+                                      "reliability": line.get("price_reliability"), "price_date": line.get("price_date")})
+    out, total, unpriced, parts = [], 0.0, 0, []
     for key in order:
         it = merged[key]
         amount = f" ({' + '.join(it['amounts'])})" if it["amounts"] else ""
         if it["priced"]:
             total += it["cost"]
-            price = f"{it['cost']:.2f} جنيه تقريبًا" if ar else f"about {it['cost']:.2f} EGP"
+            parts += it["parts"]
+            guess = any(p["source"] == "estimated" for p in it["parts"])
+            price = (f"{it['cost']:.2f} جنيه تقريبًا" + (" (تقديري)" if guess else "")) if ar else (
+                f"about {it['cost']:.2f} EGP" + (" (estimated)" if guess else ""))
         else:
             unpriced += 1
             price = "السعر غير متاح" if ar else "price not available"
@@ -301,8 +307,12 @@ def priced_shopping(recipes, lang: str = "ar") -> list:
         note = ""
         if unpriced:
             note = " (من غير الأصناف اللي ملهاش سعر)" if ar else " (not counting items without a price)"
-        out.append(f"الإجمالي التقريبي: {total:.2f} جنيه{note}" if ar
-                   else f"Approximate total: {total:.2f} EGP{note}")
+        rng = make_range(parts)
+        if rng:
+            shown = f"{range_text(rng['low'], rng['high'], lang)} ({label_text(rng, lang)})"
+        else:
+            shown = f"{total:.2f} جنيه" if ar else f"{total:.2f} EGP"
+        out.append(f"الإجمالي التقريبي: {shown}{note}" if ar else f"Approximate total: {shown}{note}")
     return out
 
 

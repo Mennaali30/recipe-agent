@@ -151,7 +151,9 @@ def test_cost_agent_numbers_come_from_services(sf):
     req = CostRequest(task="cost", recipe=RecipeRef(name="Rice", servings=4, ingredients=RICE))
     out = ask(graph(FakeLLM(RouteDecision=route("cost"), CostRequest=req), sf))
     direct = recipe_cost(RecipeInput(name="Rice", servings=4, ingredients=RICE))
-    assert f"{direct.total_egp:,.2f}" in out["answer"] and f"{direct.per_serving_egp:,.2f}" in out["answer"]
+    import re
+    lo, hi = (float(x) for x in re.search(r"about ([\d.]+) to ([\d.]+) EGP", out["answer"]).groups())
+    assert lo <= direct.total_egp <= hi and (lo, hi) == (direct.low_egp // 5 * 5, -(-direct.high_egp // 5) * 5)   # the range comes from the service
     assert [r.tool_calls for r in out["results"]] == [[("recipe_cost", True)]]
 
 

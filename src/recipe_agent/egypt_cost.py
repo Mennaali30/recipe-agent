@@ -9,6 +9,7 @@ Totals are always approximate. fifi's own `estimate.cost` is never used (unknown
 """
 from pathlib import Path
 
+from .price_range import label_text, make_range, range_text
 from .egypt_parse import (f, grams, load_map, match, parse_amount, parse_minutes,
                           parse_servings)
 
@@ -45,6 +46,8 @@ def estimate_line(ingredient: dict, price_map) -> dict:
         "grams": round(g, 1) if g is not None else None,
         "mapped_key": row["key"] if row else None,
         "price_source": row["price_source"] if (row and cost is not None) else None,
+        "price_reliability": (row.get("current_price_reliability") or None) if (row and cost is not None) else None,
+        "price_date": (row.get("current_price_date") or None) if (row and cost is not None) else None,
         "price_egp_per_kg": ppk,
         "cost_egp": cost,
     }
@@ -61,8 +64,14 @@ def estimate_recipe_cost(entry: dict, price_map=None) -> dict:
     servings = parse_servings(rec.get("servings"))
     sources = {l["price_source"] for l in priced}
     source = next((s for s in _TRUST_ORDER if s in sources), None)
+    rng = make_range([{"cost": l["cost_egp"], "source": l["price_source"], "reliability": l["price_reliability"],
+                       "price_date": l["price_date"]} for l in priced])
     return {
         "recipe_id": rec.get("id"),
+        "low_egp": rng["low"] if rng else None,
+        "high_egp": rng["high"] if rng else None,
+        "price_label": rng["label_key"] if rng else None,
+        "stale_prices": rng["stale"] if rng else False,
         "currency": "EGP",
         "approximate": True,
         "total_egp": total,
@@ -79,13 +88,15 @@ def format_cost(est: dict, lang: str = "ar") -> str:
     """One display line. Always says it is approximate and which kind of price it used."""
     if est["total_egp"] is None:
         return "التكلفة غير متاحة" if lang == "ar" else "Cost not available"
-    label = SOURCE_LABELS[lang][est["price_source"]]
     pct = int(round((est["coverage"] or 0) * 100))
+    if est.get("low_egp") is not None:
+        rng = {"label_key": est["price_label"], "stale": est.get("stale_prices")}
+        amount, label = range_text(est["low_egp"], est["high_egp"], lang), label_text(rng, lang)
+    else:   # a cost made without ranges (older data): one number, labelled by its weakest source
+        amount, label = (f"{est['total_egp']:.0f} " + ("جنيه" if lang == "ar" else "EGP")), SOURCE_LABELS[lang][est["price_source"]]
     if lang == "ar":
-        s = f"التكلفة التقريبية: {est['total_egp']:.0f} جنيه ({label}، تغطي {pct}% من المكونات)"
-    else:
-        s = f"Approx. cost: {est['total_egp']:.0f} EGP ({label}, covers {pct}% of ingredients)"
-    return s
+        return f"التكلفة التقريبية: {amount} ({label}، تغطي {pct}% من المكونات)"
+    return f"Approx. cost: {amount} ({label}, covers {pct}% of ingredients)"
 
 
 def recipe_minutes(entry: dict):

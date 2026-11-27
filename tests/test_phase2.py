@@ -125,9 +125,12 @@ def test_nothing_priced_gives_no_total(pmap):
     assert format_cost(est, "en") == "Cost not available"
 
 
-def test_format_cost_labels_estimates(veg04, pmap):
-    est = estimate_recipe_cost(veg04, pmap)
-    assert "تقديري" in format_cost(est, "ar")
+def test_format_cost_labels_estimates(pmap):
+    # a recipe whose cost rests on a placeholder price: shown as a rough estimate, with a range
+    entry = {"id": "t-1", "servings": "2", "masterIngredients": [{"name": "كاتشب", "standardAmount": "1 كوب"}]}
+    est = estimate_recipe_cost(entry, pmap)
+    assert est["price_source"] == "estimated" and est["price_label"] == "rough"
+    assert "تقديري" in format_cost(est, "ar") and "حوالي" in format_cost(est, "ar")
     assert "EGP" in format_cost(est, "en") and "rough estimate" in format_cost(est, "en")
 
 
