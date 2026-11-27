@@ -537,6 +537,35 @@ def substitute_candidates(missing_item, user_ingredients, exclude=None) -> list:
     return out
 
 
+INTL_MAX_DISTANCE = 0.5   # cosine distance; farther than this is not "the same dish", so nothing is shown
+
+
+def find_international_by_name(query: str, max_minutes=None, exclude=None, top_k: int = 3,
+                               max_distance: float = INTL_MAX_DISTANCE) -> list:
+    """International recipes close to a dish NAME (used only when no Egyptian recipe has that name).
+
+    Real recipes from the local index only, never invented. Allergies are enforced; recipes farther than
+    max_distance are dropped. Same shape as find_recipes() with nothing "have" (no ingredients given)."""
+    if not query:
+        return []
+    out = []
+    for hit in search(query, n_results=15, max_minutes=max_minutes):
+        if hit["distance"] is not None and hit["distance"] > max_distance:
+            continue
+        recipe = get_recipe(hit["recipe_id"])
+        ings = list(recipe["ingredients"])
+        if _is_excluded(recipe["name"], ings, exclude, [str(s) for s in recipe["instructions"]], check_soup=True):
+            continue
+        cmp = compare_ingredients([], ings)
+        out.append({"recipe_id": hit["recipe_id"], "name": recipe["name"], "category": recipe["category"],
+                    "total_minutes": hit["total_minutes"], "servings": int(recipe["servings"]),
+                    "nutrition": nutrition_per_serving(recipe), "used": 0, "have": cmp["have"],
+                    "missing": cmp["missing"], "coverage": cmp["coverage"], "distance": hit["distance"]})
+        if len(out) >= top_k:
+            break
+    return out
+
+
 def find_recipes(
     ingredients, max_minutes=None, exclude=None, top_k: int = 5, candidates: int = 40,
     lang: str = "en",

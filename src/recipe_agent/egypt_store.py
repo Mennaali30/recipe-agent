@@ -358,6 +358,12 @@ def _dish_part(text: str) -> str:
     return head if _name_tokens(head) else t
 
 
+def dish_query(text: str) -> str:
+    """The dish name in a free message, filler words removed ("عايز لازانيا" -> "لازانيا"). '' if none."""
+    filler = {w for w in _name_tokens(" ".join(DISH_FILLER))}
+    return " ".join(t for t in _name_tokens(_dish_part(text)) if t not in filler)
+
+
 def find_by_name(text: str, exclude=None, max_minutes=None, top_k: int = 3, lang: str = "ar"):
     """Look up curated Egyptian recipes by dish name in a free message ("عايز كشري").
 

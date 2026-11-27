@@ -43,6 +43,7 @@ class GraphState(TypedDict, total=False):
     plan_info: dict
     egypt_note: str
     dish_blocked: list
+    dish_note: str
 
 
 def parse_node(state: GraphState) -> dict:
@@ -171,6 +172,10 @@ def dish_node(state: GraphState) -> dict:
                 f"The dish you asked for ({names}) contains something you avoid because of your allergies, so I will not show it."
             ),
         }
+    if not found:
+        query = egypt_store.dish_query(state["text"])
+        if query:
+            return _international_for_dish(state, query)
     recipes = []
     for recipe in found:
         recipe = dict(recipe)
@@ -180,10 +185,37 @@ def dish_node(state: GraphState) -> dict:
     return {"recipes": recipes, "shopping": tools.priced_shopping(recipes, req.language)}
 
 
+def _international_for_dish(state, query: str) -> dict:
+    """No Egyptian recipe has this name: say so first, then show close international recipes (no EGP cost).
+    Nothing is invented; the allergy filter and time limit still apply."""
+    req = state["request"]
+    ar = req.language == "ar"
+    try:
+        found = tools.find_international_by_name(query, max_minutes=req.max_minutes, exclude=req.exclude_ingredients)
+    except Exception:
+        log.exception("international dish lookup skipped")
+        found = []
+    note = (f"مفيش وصفة مصرية لـ«{query}» في مجموعتنا." if ar
+            else f"There is no Egyptian recipe for \"{query}\" in our collection.")
+    if not found:
+        more = (" ومالقيتش وصفة عالمية قريبة منها. قوليلي المكونات اللي عندك وأرشحلك حاجة." if ar
+                else " I also found no close international recipe. Tell me the ingredients you have and I will suggest something.")
+        return {"recipes": [], "dish_blocked": [], "answer": note + more}
+    note += (" دي أقرب وصفات عالمية (ومعهاش تكلفة بالجنيه):" if ar
+             else " These are the closest international recipes (no EGP cost):")
+    recipes = []
+    for recipe in found:
+        recipe = dict(recipe)
+        recipe["instructions"] = tools.get_instructions(recipe["recipe_id"], lang=req.language)
+        recipe["substitutions"] = []
+        recipes.append(recipe)
+    return {"recipes": recipes, "shopping": tools.priced_shopping(recipes, req.language), "dish_note": note}
+
+
 def after_dish(state: GraphState) -> str:
     if state.get("recipes"):
         return "verify"
-    return "end" if state.get("dish_blocked") else "clarify"
+    return "end" if state.get("dish_blocked") is not None else "clarify"
 
 
 def verify_node(state: GraphState) -> dict:
@@ -266,9 +298,9 @@ def respond_node(state: GraphState) -> dict:
     language) is prepended: it says the shown recipes are international alternatives and
     names the closest Egyptian recipe when only the time limit excluded it.
     """
-    note = None
+    note = state.get("dish_note")
     try:
-        note = egypt_store.no_match_note(
+        note = note or egypt_store.no_match_note(
             state["recipes"],
             state["request"].ingredients,
             max_minutes=state["request"].max_minutes,
