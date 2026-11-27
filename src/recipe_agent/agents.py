@@ -283,6 +283,8 @@ Rules:
 - If "recipes" is empty, say no matching recipes were found and suggest adding more ingredients or
   allowing more time. Do not invent a recipe.
 - End with a combined shopping list if "shopping_list" is not empty.
+  Copy each shopping_list item exactly as given, including the price and the total line.
+  Never add, change or invent a price.
 - Finish with one short line saying that times and nutrition values come from the recipe dataset
   and are approximate.
 - Use short markdown: a heading per recipe and numbered steps. No long introductions."""

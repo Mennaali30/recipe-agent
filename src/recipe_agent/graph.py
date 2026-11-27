@@ -90,7 +90,7 @@ def search_node(state: GraphState) -> dict:
     )
     for recipe in found:
         recipe["instructions"] = tools.get_instructions(recipe["recipe_id"], lang=req.language)
-    shopping = tools.shopping_list([r["missing"] for r in found])
+    shopping = tools.priced_shopping(found, req.language)
     return {"recipes": found, "shopping": shopping, "attempt": attempt + 1}
 
 
@@ -117,7 +117,7 @@ def plan_node(state: GraphState) -> dict:
         recipe["instructions"] = tools.get_instructions(recipe["recipe_id"], lang=req.language)
         recipe["substitutions"] = []
         recipes.append(recipe)
-    shopping = tools.shopping_list([r["missing"] for r in recipes])
+    shopping = tools.priced_shopping(recipes, req.language)
     return {
         "recipes": recipes,
         "shopping": shopping,
@@ -177,7 +177,7 @@ def dish_node(state: GraphState) -> dict:
         recipe["instructions"] = tools.get_instructions(recipe["recipe_id"], lang=req.language)
         recipe["substitutions"] = []
         recipes.append(recipe)
-    return {"recipes": recipes, "shopping": tools.shopping_list([r["missing"] for r in recipes])}
+    return {"recipes": recipes, "shopping": tools.priced_shopping(recipes, req.language)}
 
 
 def after_dish(state: GraphState) -> str:
@@ -189,7 +189,7 @@ def after_dish(state: GraphState) -> str:
 def verify_node(state: GraphState) -> dict:
     """Code only (no LLM): re-check the final recipes against the allergies before writing."""
     kept, issues = verifier.verify_recipes(state["request"], state["recipes"])
-    shopping = tools.shopping_list([r["missing"] for r in kept])
+    shopping = tools.priced_shopping(kept, state["request"].language)
     update = {"recipes": kept, "shopping": shopping, "verifier_report": {"removed": issues}}
     if state.get("plan_info"):
         update["plan_info"] = {**state["plan_info"], "planned": len(kept)}

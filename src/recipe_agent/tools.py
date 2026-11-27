@@ -241,6 +241,71 @@ def shopping_list(missing_lists) -> list:
     return out
 
 
+def _egypt_lines(recipe_id) -> dict:
+    """name (Arabic or English) -> priced line of an Egyptian recipe."""
+    e = egypt_store.get_recipe(recipe_id)
+    out = {}
+    for ar, en, line in zip(e["ingredients"], e["ingredients_en"], e["cost"]["lines"]):
+        out.setdefault(ar, line)
+        if en:
+            out.setdefault(en, line)
+    return out
+
+
+def priced_shopping(recipes, lang: str = "ar") -> list:
+    """Shopping list with an approximate EGP price next to each item.
+
+    Items with the same name (ignoring "ال" and a section prefix like "للصلصة:") are merged across
+    recipes and their prices added. Prices come from the recipe's own cost lines (the quantity the
+    recipe needs, at the price map's price). Egyptian recipes only: other recipes have no prices, so
+    their items are listed by name. An item whose price is unknown says so; it is never guessed,
+    and the total only counts the priced items and says that.
+    """
+    ar = lang == "ar"
+    merged, order, plain, plain_seen = {}, [], [], set()
+    for r in recipes:
+        lines = _egypt_lines(r["recipe_id"]) if egypt_store.is_egypt_id(r["recipe_id"]) else None
+        for name in r.get("missing", []):
+            if lines is None or name not in lines:
+                key = normalize(name) or frozenset({str(name).lower()})
+                if key not in plain_seen:
+                    plain_seen.add(key)
+                    plain.append(str(name))
+                continue
+            line = lines[name]
+            clean = name.split(":", 1)[-1].strip() or name
+            key = tuple(sorted(egypt_store._name_tokens(clean)))
+            item = merged.get(key)
+            if item is None:
+                item = merged[key] = {"name": clean, "amounts": [], "cost": 0.0, "priced": True}
+                order.append(key)
+            if line.get("amount_text") and line["amount_text"] not in item["amounts"]:
+                item["amounts"].append(line["amount_text"])
+            if line.get("cost_egp") is None:
+                item["priced"] = False
+            else:
+                item["cost"] += line["cost_egp"]
+    out, total, unpriced = [], 0.0, 0
+    for key in order:
+        it = merged[key]
+        amount = f" ({' + '.join(it['amounts'])})" if it["amounts"] else ""
+        if it["priced"]:
+            total += it["cost"]
+            price = f"{it['cost']:.2f} جنيه تقريبًا" if ar else f"about {it['cost']:.2f} EGP"
+        else:
+            unpriced += 1
+            price = "السعر غير متاح" if ar else "price not available"
+        out.append(f"{it['name']}{amount} - {price}" if ar else f"{it['name']}{amount}: {price}")
+    out += plain
+    if order and total > 0:
+        note = ""
+        if unpriced:
+            note = " (من غير الأصناف اللي ملهاش سعر)" if ar else " (not counting items without a price)"
+        out.append(f"الإجمالي التقريبي: {total:.2f} جنيه{note}" if ar
+                   else f"Approximate total: {total:.2f} EGP{note}")
+    return out
+
+
 def _used_count(user_ingredients, recipe_ingredients) -> int:
     """How many of the USER's ingredients does this recipe actually use?"""
     user = [normalize(u) for u in user_ingredients]

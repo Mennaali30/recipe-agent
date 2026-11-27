@@ -401,3 +401,62 @@ def test_graph_memory_action_does_not_trigger_dish_lookup(monkeypatch):
     monkeypatch.setattr(graph.memory, "forget", lambda uid="default": None)
     out = _run_dish(monkeypatch, "انسي الحساسيات كشري", forget_memory=True)
     assert not out.get("recipes") and out["memory_event"] == "forgotten"
+
+
+# ---------------------------------------------------------------- Phase 3.3: priced shopping list
+def _fake_lines(monkeypatch, table):
+    monkeypatch.setattr(tools, "_egypt_lines", lambda rid: table[rid])
+
+
+def _line(amount, cost):
+    return {"amount_text": amount, "cost_egp": cost}
+
+
+def test_priced_shopping_merges_prefix_and_al_duplicates_and_adds_prices(monkeypatch):
+    _fake_lines(monkeypatch, {
+        "egy:a": {"عصير الطماطم": _line("كوبان", 4.5), "فلفل حار": _line("قرن", None)},
+        "egy:b": {"للصلصة: عصير طماطم": _line("نص كوب", 2.25)},
+    })
+    out = tools.priced_shopping([
+        {"recipe_id": "egy:a", "missing": ["عصير الطماطم", "فلفل حار"]},
+        {"recipe_id": "egy:b", "missing": ["للصلصة: عصير طماطم"]},
+    ], "ar")
+    tomato = [l for l in out if "طماطم" in l and "الإجمالي" not in l]
+    assert len(tomato) == 1 and "6.75 جنيه" in tomato[0] and "كوبان + نص كوب" in tomato[0]
+    assert any("فلفل حار" in l and "السعر غير متاح" in l for l in out)
+    assert out[-1].startswith("الإجمالي التقريبي: 6.75 جنيه") and "ملهاش سعر" in out[-1]
+
+
+def test_priced_shopping_unpriced_part_makes_the_merged_item_unpriced(monkeypatch):
+    _fake_lines(monkeypatch, {"egy:a": {"بصل": _line("حبة", 1.5)}, "egy:b": {"بصل": _line("بصلتان", None)}})
+    out = tools.priced_shopping([{"recipe_id": "egy:a", "missing": ["بصل"]},
+                                 {"recipe_id": "egy:b", "missing": ["بصل"]}], "ar")
+    assert "السعر غير متاح" in out[0] and not any("الإجمالي" in l for l in out)
+
+
+def test_priced_shopping_english_and_non_egyptian_items_have_no_invented_price(monkeypatch):
+    _fake_lines(monkeypatch, {"egy:a": {"rice": _line("1 cup", 6.6)}})
+    out = tools.priced_shopping([{"recipe_id": "egy:a", "missing": ["rice"]},
+                                 {"recipe_id": 12345, "missing": ["Garlic", "garlic"]}], "en")
+    assert out[0] == "rice (1 cup): about 6.60 EGP"
+    assert out[1] == "Garlic"                       # international recipe: name only, deduplicated
+    assert out[-1] == "Approximate total: 6.60 EGP"
+
+
+def test_priced_shopping_real_recipe_prices_match_cost_lines():
+    found, _ = egypt_store.find_by_name("طاجن مكرونة الكشري", top_k=1)
+    out = tools.priced_shopping(found, "ar")
+    entry = egypt_store.get_recipe(found[0]["recipe_id"])
+    priced_missing = [l["cost_egp"] for l in entry["cost"]["lines"]
+                      if l["name"] in found[0]["missing"] and l["cost_egp"] is not None]
+    assert out[-1].startswith(f"الإجمالي التقريبي: {sum(priced_missing):.2f} جنيه")
+    assert any("مكرونة" in l and "14.92 جنيه" in l for l in out)
+    assert len({l.split(" (")[0].split(" - ")[0] for l in out[:-1]}) == len(out) - 1   # no repeated item
+
+
+def test_plain_fallback_answer_shows_the_priced_list():
+    from recipe_agent import verifier
+    found, _ = egypt_store.find_by_name("كشري", top_k=1)
+    shopping = tools.priced_shopping(found, "ar")
+    text = verifier.fallback_answer(UserRequest(language="ar"), found, shopping, reason="llm_error")
+    assert "جنيه تقريبًا" in text and "الإجمالي التقريبي" in text
