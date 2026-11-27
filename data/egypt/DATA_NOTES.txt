@@ -29,3 +29,8 @@ PHASE 3 (curated set in the app)
 - Buckets by word-boundary keyword rules on title (+ preview ingredients for chicken/meat); desserts excluded; near-duplicate titles removed; hand-added icons: كشري (fah-437, fah-217, add-021), ملوخية (osool-547/548/550), طعمية (add-200, fah-327), فول مدمس (savory-06, osool-606), بليلة (des-31 was considered; final set in curated.json).
 - Spot-check band kept: every curated recipe has known time and total 5-1500 EGP with coverage >= 0.6 (soups >= 0.5). Totals are still approximate: herbs priced by keyword can land on the wrong group (شبت مفري reads as minced beef, a few piasters), and whole-bird weights are averages.
 - fifi allergen flags use EU-14 names; celery/mustard/lupin/sulphites have no app family (word scan only).
+
+PRICE UPDATE 27 Nov 2026 (price plan, step 1)
+- 7 groups moved from estimated to current_web, each with URL, date and reliability in its row: fish_generic, chickpeas, yogurt, tomato_paste_sauce, lemon, yeast_baking, honey_molasses. 36 groups are still estimated.
+- Matching fixes: "موزاريلا" was priced as banana (keyword "موز" matched the start of the word); banana now needs the whole word, and mozzarella is priced as generic cheese (rough, mozzarella costs more).
+- Known and not changed: "ورق" (non_food, zero cost) also catches "ورق بقدونس"; "مستكة" and "سمسم" share the saffron_special price; gizzards_offal (tripe, liver, trotters) still has no sourced price.
