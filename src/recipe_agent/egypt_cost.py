@@ -94,6 +94,12 @@ def format_cost(est: dict, lang: str = "ar") -> str:
         amount, label = range_text(est["low_egp"], est["high_egp"], lang), label_text(rng, lang)
     else:   # a cost made without ranges (older data): one number, labelled by its weakest source
         amount, label = (f"{est['total_egp']:.0f} " + ("جنيه" if lang == "ar" else "EGP")), SOURCE_LABELS[lang][est["price_source"]]
+    missing = [n for n in (est.get("unpriced") or [])][:3]
+    if (est["coverage"] or 0) < 1 and est.get("unpriced"):   # partial: never look like a full cost
+        more = ("، ".join(missing)) if lang == "ar" else ", ".join(missing)
+        if lang == "ar":
+            return f"التكلفة التقريبية: {amount} (جزئية، التكلفة الحقيقية أعلى: {label}، تغطي {pct}% من المكونات، من غير: {more})"
+        return f"Approx. cost: {amount} (partial, the real cost is higher: {label}, covers {pct}% of ingredients, not counted: {more})"
     if lang == "ar":
         return f"التكلفة التقريبية: {amount} ({label}، تغطي {pct}% من المكونات)"
     return f"Approx. cost: {amount} ({label}, covers {pct}% of ingredients)"

@@ -47,7 +47,7 @@ to "ar" if the user wrote Arabic. If unsure, choose recipes."""
 _KW = [
     ("profile", r"احفظي|احفظ |افتكري|انسي|امسحي|بروفايل|profile|remember|forget|save my|حجم العيلة|عدد افراد|عدد أفراد|family size|تفضيلات|preferences|clear (my )?history|مسح المحادثة"),
     ("budget", r"ميزاني|budget"),
-    ("business", r"انتاج|إنتاج|production|ربح|profit|margin|هامش|سعر البيع|selling price|اجهز \d+|\d+ وجب"),
+    ("business", r"انتاج|إنتاج|production|ربح|profit|margin|هامش|سعر البيع|selling price|اجهز \d+"),
     ("shopping", r"قايمة شراء|قائمة شراء|قايمه شراء|shopping list|اشتري|المطلوب شراءه|shopping"),
     ("pantry", r"مخزن|pantry|خزين|صلاحي|expir|ضيف|أضيف|اضيف|استهلكت|استخدمت|low stock|stock"),
     ("cost", r"تكلف|كلف|بكام|سعر|cost|price|how much|حول|convert|كام جرام|grams"),
@@ -421,9 +421,15 @@ class BusinessAgent(Specialist):
               "stated as null. Never invent a price or an expense.")
 
     def handle(self, a: BusinessRequest, lang, ctx, result):
-        if not a.recipe:
+        r = a.recipe
+        # a recipe is a dish name, an id, or ingredients WITH amounts; a bare ingredient list is not enough
+        has_amounts = bool(r and r.ingredients and any(i.quantity or i.amount_text for i in r.ingredients))
+        generic = {"recipe", "dish", "meal", "وصفه", "وصفة", "اكله", "أكلة", "وجبه", "وجبة"}
+        named = bool(r and ((r.name and r.name.strip().lower() not in generic) or r.recipe_id))
+        if not (named or has_amounts):
             result.needs_input = True
-            result.answer = tr(lang, "هتنتجي أنهي وصفة؟", "Which recipe are you producing?")
+            result.answer = tr(lang, "هتنتجي أنهي وصفة؟ اكتبي اسم الأكلة (أو المكونات بكمياتها).",
+                               "Which recipe are you producing? Give the dish name (or the ingredients with amounts).")
             return
         if not a.meals:
             result.needs_input = True
