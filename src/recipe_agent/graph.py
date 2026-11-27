@@ -42,6 +42,7 @@ class GraphState(TypedDict, total=False):
     fallback: str
     plan_info: dict
     egypt_note: str
+    dish_blocked: list
 
 
 def parse_node(state: GraphState) -> dict:
@@ -142,6 +143,47 @@ def substitute_node(state: GraphState) -> dict:
         recipe["substitutions"] = by_recipe.get(recipe["recipe_id"], [])
         recipes.append(recipe)
     return {"recipes": recipes}
+
+
+def dish_node(state: GraphState) -> dict:
+    """Code only (no LLM): a message with no ingredients may name a dish ("عايز كشري").
+
+    Looks the dish up in the curated Egyptian recipes. Allergies and the time limit are applied;
+    if every match is removed by an allergy, the user is told that, not shown the recipe.
+    """
+    req = state["request"]
+    try:
+        found, blocked = egypt_store.find_by_name(
+            state["text"], exclude=req.exclude_ingredients, max_minutes=req.max_minutes, lang=req.language
+        )
+    except Exception:
+        log.exception("dish lookup skipped")
+        return {"recipes": []}
+    if not found and blocked:
+        ar = req.language == "ar"
+        names = "، ".join(blocked[:3]) if ar else ", ".join(blocked[:3])
+        return {
+            "recipes": [],
+            "dish_blocked": blocked,
+            "answer": (
+                f"الوصفة اللي بتدوري عليها ({names}) فيها مكون بتتجنبيه بسبب الحساسية، فمش هعرضها."
+                if ar else
+                f"The dish you asked for ({names}) contains something you avoid because of your allergies, so I will not show it."
+            ),
+        }
+    recipes = []
+    for recipe in found:
+        recipe = dict(recipe)
+        recipe["instructions"] = tools.get_instructions(recipe["recipe_id"], lang=req.language)
+        recipe["substitutions"] = []
+        recipes.append(recipe)
+    return {"recipes": recipes, "shopping": tools.shopping_list([r["missing"] for r in recipes])}
+
+
+def after_dish(state: GraphState) -> str:
+    if state.get("recipes"):
+        return "verify"
+    return "end" if state.get("dish_blocked") else "clarify"
 
 
 def verify_node(state: GraphState) -> dict:
@@ -303,6 +345,9 @@ def check_node(state: GraphState) -> dict:
 def after_memory(state: GraphState) -> str:
     req = state["request"]
     if not req.ingredients or _only_pantry(req.ingredients):
+        # No ingredients: the message may name a dish. Not when a memory action was just done.
+        if not req.ingredients and not state.get("memory_event") and not req.remember:
+            return "dish"
         return "clarify"
     if req.meals and req.meals >= 2:
         return "plan"
@@ -322,6 +367,7 @@ def build_graph():
     graph.add_node("memory", memory_node)
     graph.add_node("search", search_node)
     graph.add_node("plan", plan_node)
+    graph.add_node("dish", dish_node)
     graph.add_node("substitute", substitute_node)
     graph.add_node("verify", verify_node)
     graph.add_node("clarify", clarify_node)
@@ -331,7 +377,11 @@ def build_graph():
     graph.add_edge(START, "parse")
     graph.add_edge("parse", "memory")
     graph.add_conditional_edges(
-        "memory", after_memory, {"search": "search", "plan": "plan", "clarify": "clarify"}
+        "memory", after_memory,
+        {"search": "search", "plan": "plan", "clarify": "clarify", "dish": "dish"},
+    )
+    graph.add_conditional_edges(
+        "dish", after_dish, {"verify": "verify", "clarify": "clarify", "end": END}
     )
     graph.add_conditional_edges(
         "search", after_search, {"search": "search", "substitute": "substitute"}

@@ -324,6 +324,76 @@ def find(ingredients, max_minutes=None, exclude=None, top_k: int = 5, lang: str 
     return strong[:top_k]
 
 
+_MARKS = re.compile("[\u064b-\u065f\u0670\u0640]")
+# Words that ask for a dish but are not part of its name ("عايز كشري", "I want koshari").
+DISH_FILLER = set("""
+عايز عايزه عايزة عاوز عاوزه عاوزة نفسي نفسى اعمل اعملي اعمليلي اعملى اطبخ اطبخي اطبخلي هات هاتلي
+ممكن وصفه وصفة وصفات طريقه طريقة ازاي كيف قولي قوليلي لي ليا لينا انا عندي النهارده النهاردة
+انهارده انهاردة بكره بكرة الغدا الغداء العشا العشاء الفطار الفطور اكله اكلة اكل
+i want me to make cook give recipe recipes for how a an the some please can you
+""".split())
+
+
+def _name_tokens(text: str) -> list:
+    t = _MARKS.sub("", str(text or "")).lower()
+    for a, b in (("أ", "ا"), ("إ", "ا"), ("آ", "ا"), ("ى", "ي"), ("ة", "ه")):
+        t = t.replace(a, b)
+    toks = re.findall(r"[\w]+", t)
+    return [x[2:] if x.startswith("ال") and len(x) > 4 else x for x in toks]
+
+
+def find_by_name(text: str, exclude=None, max_minutes=None, top_k: int = 3, lang: str = "ar"):
+    """Look up curated Egyptian recipes by dish name in a free message ("عايز كشري").
+
+    Used only when the request has no ingredients. Filler words are dropped; a recipe matches
+    when its Arabic or English title contains the remaining words (at least half of them, best
+    matches first). The allergy filter and the time limit apply exactly as in find().
+    Returns (results, blocked): results have the same shape as find(); `blocked` lists the names
+    of matching recipes that were removed because of the allergies.
+    """
+    filler = {w for w in _name_tokens(" ".join(DISH_FILLER))}
+    query = [t for t in _name_tokens(text) if t not in filler]
+    if not query:
+        return [], []
+    store = load_store()
+    scored = []
+    for e in store["entries"].values():
+        best = None
+        for title in (e["name"], e["name_en"]):
+            toks = set(_name_tokens(title))
+            hit = sum(1 for q in query if q in toks)
+            frac = hit / len(query)
+            if hit and frac >= 0.5 and (best is None or frac > best[0]):
+                best = (frac, len(toks))
+        if best:
+            scored.append((-best[0], best[1], e))
+    scored.sort(key=lambda x: (x[0], x[1], x[2]["recipe_id"]))
+    results, blocked = [], []
+    for _neg, _n, e in scored:
+        if exclude and excluded(e, exclude):
+            blocked.append(e["name"])
+            continue
+        if max_minutes is not None and (e["total_minutes"] is None or e["total_minutes"] > max_minutes):
+            continue
+        names = e["ingredients"] if lang == "ar" else [
+            en or ar for ar, en in zip(e["ingredients"], e["ingredients_en"])
+        ]
+        missing = [n for n, k, tt in zip(names, e["ingredient_keys"], e["to_taste"])
+                   if not tt and k not in PANTRY_KEYS]
+        results.append({
+            "recipe_id": e["recipe_id"], "name": e["name"], "name_en": e["name_en"],
+            "category": e["category"], "total_minutes": e["total_minutes"],
+            "servings": e["servings"], "nutrition": e["nutrition"],
+            "used": 0, "have": [], "missing": missing, "coverage": 0.0, "distance": None,
+            "egyptian": True, "bucket": e["category"],
+            "cost_total_egp": e["cost"]["total_egp"], "price_source": e["cost"]["price_source"],
+            "cost_text": format_cost(e["cost"], lang),
+        })
+        if len(results) >= top_k:
+            break
+    return results, blocked
+
+
 def no_match_note(results, ingredients, max_minutes=None, exclude=None, lang: str = "ar"):
     """One-line note (in the user's language) when none of the shown recipes is Egyptian.
 

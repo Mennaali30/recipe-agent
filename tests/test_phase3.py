@@ -323,3 +323,81 @@ def test_fallback_answers_keep_the_note(monkeypatch):
         }
     )
     assert out2["fallback"] == "check_failed" and out2["answer"].startswith("ملاحظة")
+
+
+# ---------------------------------------------------------------- Phase 3.2: dish name lookup
+def test_find_by_name_koshari_with_filler_words():
+    for text in ["عايز كشري", "كشري", "عايزة كشري النهاردة", "I want koshari", "الكشري"]:
+        found, blocked = egypt_store.find_by_name(text, top_k=3)
+        assert found and not blocked, text
+        assert all("كشري" in r["name"] or "koshari" in r["name_en"].lower() for r in found), text
+        assert all(r["egyptian"] and r["cost_text"] for r in found)
+    assert len(egypt_store.find_by_name("عايز كشري", top_k=3)[0]) == 3
+
+
+def test_find_by_name_no_match_and_filler_only():
+    assert egypt_store.find_by_name("عايز أكل خفيف")[0] == []
+    assert egypt_store.find_by_name("عايز")[0] == []
+    assert egypt_store.find_by_name("")[0] == []
+    assert egypt_store.find_by_name("sushi nigiri")[0] == []
+
+
+def test_find_by_name_applies_allergy_and_time_filters():
+    found, _ = egypt_store.find_by_name("كشري", top_k=25)
+    assert len(found) >= 3
+    ex = ["milk"]
+    kept, blocked = egypt_store.find_by_name("كشري", exclude=ex, top_k=25)
+    for r in kept:
+        assert not egypt_store.excluded(egypt_store.get_recipe(r["recipe_id"]), ex)
+    assert len(kept) + len(blocked) == len(found)
+    short, _ = egypt_store.find_by_name("كشري", max_minutes=1, top_k=25)
+    assert short == []
+
+
+def _run_dish(monkeypatch, text, **req_kw):
+    from recipe_agent import graph
+    from recipe_agent.schemas import UserRequest
+    monkeypatch.setattr(graph, "parse_request", lambda t: UserRequest(language=req_kw.pop("language", "ar"), **req_kw))
+    monkeypatch.setattr(graph, "write_answer", lambda *a, **k: "ANSWER")
+    monkeypatch.setattr(graph.memory, "get_exclusions", lambda uid="default": [])
+    graph.build_graph.cache_clear()
+    return graph.run_agent(text, "t")
+
+
+def test_graph_dish_name_only_returns_egyptian_recipe_with_cost(monkeypatch):
+    from recipe_agent import graph
+    out = _run_dish(monkeypatch, "عايز كشري")
+    assert out["recipes"] and all(egypt_store.is_egypt_id(r["recipe_id"]) for r in out["recipes"])
+    assert "جنيه" in out["answer"]             # the cost line reaches the answer
+    assert "المكونات اللي عندك" not in out["answer"]
+
+
+def test_graph_dish_with_allergy_is_never_shown(monkeypatch):
+    from recipe_agent import graph
+    found, _ = egypt_store.find_by_name("كشري", top_k=25)
+    allergic = [r for r in found if egypt_store.excluded(egypt_store.get_recipe(r["recipe_id"]), ["milk"])]
+    out = _run_dish(monkeypatch, "عايزة كشري", exclude_ingredients=["milk"])
+    shown = {r["recipe_id"] for r in out["recipes"]}
+    assert not shown & {r["recipe_id"] for r in allergic}
+
+
+def test_graph_all_matches_blocked_says_so(monkeypatch):
+    from recipe_agent import graph
+    monkeypatch.setattr(egypt_store, "find_by_name",
+                        lambda *a, **k: ([], ["كشري الحلة الواحدة"]))
+    out = _run_dish(monkeypatch, "عايزة كشري", exclude_ingredients=["milk"])
+    assert not out["recipes"] and "حساسية" in out["answer"]
+
+
+def test_graph_unknown_dish_still_asks_for_ingredients(monkeypatch):
+    from recipe_agent import graph
+    out = _run_dish(monkeypatch, "عايز سوشي فاخر")
+    assert not out.get("recipes") and "answer" in out
+    assert "مكونات" in out["answer"] or "ingredients" in out["answer"].lower()
+
+
+def test_graph_memory_action_does_not_trigger_dish_lookup(monkeypatch):
+    from recipe_agent import graph
+    monkeypatch.setattr(graph.memory, "forget", lambda uid="default": None)
+    out = _run_dish(monkeypatch, "انسي الحساسيات كشري", forget_memory=True)
+    assert not out.get("recipes") and out["memory_event"] == "forgotten"
