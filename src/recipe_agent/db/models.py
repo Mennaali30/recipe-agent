@@ -74,6 +74,16 @@ class UserProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class Account(Base):
+    """A login. One per user; the user's data (pantry, profile, history) hangs on users.id as before."""
+    __tablename__ = "accounts"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class PendingAction(Base):
     """A sensitive action waiting for the user's yes (one per user; the next message answers it)."""
     __tablename__ = "pending_actions"

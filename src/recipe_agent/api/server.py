@@ -13,6 +13,15 @@ Endpoints
   DELETE /users/{id}/history
 
 Set RECIPE_API_KEY to require the header X-API-Key on everything except /health.
+
+Accounts (login)
+  POST   /auth/register     {"username", "password"}      -> {"token", "user_id"}
+  POST   /auth/login        {"username", "password"}      -> {"token", "user_id"}
+  GET    /auth/me                                         -> {"user_id"}
+  POST   /auth/password     {"old_password", "new_password"}
+Send the token as "Authorization: Bearer <token>". Set RECIPE_REQUIRE_LOGIN=1 (or create_app(require_login=True))
+to make /chat and /users/... need it: the user is then the token's user and any other user id gets 403.
+Without it, the old behaviour stays (user_id in the request). Set RECIPE_AUTH_SECRET so tokens survive a restart.
 """
 import hmac
 import logging
@@ -23,6 +32,8 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from recipe_agent.services.accounts import (AccountError, AccountService, auth_secret, issue_token,
+                                             verify_token)
 from recipe_agent.services.profile import HistoryService, ProfileService, ProfileUpdate
 
 log = logging.getLogger(__name__)
@@ -40,6 +51,24 @@ class ChatOut(BaseModel):
     user_id: str
 
 
+class CredentialsIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordIn(BaseModel):
+    old_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+class TokenOut(BaseModel):
+    token: str
+    user_id: str
+
+
+_AUTH_STATUS = {"bad_username": 422, "bad_password": 422, "taken": 409, "invalid_credentials": 401, "locked": 429}
+
+
 class AllergiesIn(BaseModel):
     items: list[str] = Field(min_length=1, max_length=30)
 
@@ -50,9 +79,15 @@ def _uid(user_id: str) -> str:
     return user_id
 
 
-def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optional[str] = None) -> FastAPI:
+def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optional[str] = None,
+               require_login: Optional[bool] = None, secret: Optional[bytes] = None, clock=None) -> FastAPI:
     """answer_fn(text, user_id) -> str. Default: the supervisor (built on first use)."""
     api_key = api_key if api_key is not None else os.getenv("RECIPE_API_KEY")
+    if require_login is None:
+        require_login = os.getenv("RECIPE_REQUIRE_LOGIN", "").strip().lower() in ("1", "true", "yes")
+    secret = secret or auth_secret()
+    import time as _time
+    clock = clock or _time.time
     app = FastAPI(title="Matbakhak AI API", version="6a")
     state = {"sf": session_factory}
 
@@ -77,13 +112,76 @@ def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optio
 
     auth = [Depends(check_key)]
 
+    def token_user(authorization: Optional[str]) -> Optional[str]:
+        """The user id of a valid Bearer token whose account still exists; else None."""
+        if not authorization or not authorization.lower().startswith("bearer "):
+            return None
+        uid = verify_token(authorization[7:].strip(), secret, clock())
+        if uid is None:
+            return None
+        with sf()() as s:
+            return uid if AccountService(s, clock).exists(uid) else None
+
+    def who(requested: Optional[str], authorization: Optional[str]) -> str:
+        """The user this request is for. With login required it is always the token's user."""
+        if not require_login:
+            return _uid(requested or "default")
+        uid = token_user(authorization)
+        if uid is None:
+            raise HTTPException(401, "login required: send Authorization: Bearer <token>")
+        if requested not in (None, "", "default", uid):
+            raise HTTPException(403, "this is not your account")
+        return uid
+
+    def auth_call(fn):
+        try:
+            return fn()
+        except AccountError as exc:
+            raise HTTPException(_AUTH_STATUS.get(exc.code, 400), str(exc))
+
+    @app.post("/auth/register", response_model=TokenOut, dependencies=auth)
+    def register(body: CredentialsIn):
+        name = body.username.strip().lower()
+        try:   # an old id that already has saved allergies belongs to someone: not available
+            if memory is not None and memory.get_exclusions(name):
+                raise HTTPException(409, "this username is not available")
+        except HTTPException:
+            raise
+        except Exception:
+            log.exception("memory check at register failed")
+        with sf()() as s:
+            uid = auth_call(lambda: AccountService(s, clock).register(body.username, body.password))
+        return TokenOut(token=issue_token(uid, secret, clock()), user_id=uid)
+
+    @app.post("/auth/login", response_model=TokenOut, dependencies=auth)
+    def login(body: CredentialsIn):
+        with sf()() as s:
+            uid = auth_call(lambda: AccountService(s, clock).authenticate(body.username, body.password))
+        return TokenOut(token=issue_token(uid, secret, clock()), user_id=uid)
+
+    @app.get("/auth/me", dependencies=auth)
+    def me(authorization: Optional[str] = Header(default=None)):
+        uid = token_user(authorization)
+        if uid is None:
+            raise HTTPException(401, "login required")
+        return {"user_id": uid}
+
+    @app.post("/auth/password", dependencies=auth)
+    def change_password(body: PasswordIn, authorization: Optional[str] = Header(default=None)):
+        uid = token_user(authorization)
+        if uid is None:
+            raise HTTPException(401, "login required")
+        with sf()() as s:
+            auth_call(lambda: AccountService(s, clock).change_password(uid, body.old_password, body.new_password))
+        return {"changed": True}
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
 
     @app.post("/chat", response_model=ChatOut, dependencies=auth)
-    def chat(body: ChatIn):
-        uid = _uid(body.user_id)
+    def chat(body: ChatIn, authorization: Optional[str] = Header(default=None)):
+        uid = who(body.user_id, authorization)
         fn = answer_fn
         if fn is None:
             from recipe_agent.multi import app as supervisor_app
@@ -101,39 +199,39 @@ def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optio
             raise HTTPException(500, "Could not answer right now.")
 
     @app.get("/users/{user_id}/profile", dependencies=auth)
-    def get_profile(user_id: str, s=Depends(db)):
-        return ProfileService(s, memory).get(_uid(user_id))
+    def get_profile(user_id: str, s=Depends(db), authorization: Optional[str] = Header(default=None)):
+        return ProfileService(s, memory).get(who(user_id, authorization))
 
     @app.put("/users/{user_id}/profile", dependencies=auth)
-    def put_profile(user_id: str, upd: ProfileUpdate, s=Depends(db)):
+    def put_profile(user_id: str, upd: ProfileUpdate, s=Depends(db), authorization: Optional[str] = Header(default=None)):
         try:
-            return ProfileService(s, memory).update(_uid(user_id), upd)
+            return ProfileService(s, memory).update(who(user_id, authorization), upd)
         except ValueError as exc:
             raise HTTPException(422, str(exc))
 
     @app.delete("/users/{user_id}/profile", dependencies=auth)
-    def delete_profile(user_id: str, s=Depends(db)):
-        return {"deleted": ProfileService(s, memory).delete_profile(_uid(user_id))}
+    def delete_profile(user_id: str, s=Depends(db), authorization: Optional[str] = Header(default=None)):
+        return {"deleted": ProfileService(s, memory).delete_profile(who(user_id, authorization))}
 
     @app.post("/users/{user_id}/allergies", dependencies=auth)
-    def add_allergies(user_id: str, body: AllergiesIn, s=Depends(db)):
+    def add_allergies(user_id: str, body: AllergiesIn, s=Depends(db), authorization: Optional[str] = Header(default=None)):
         try:
-            return {"allergies": ProfileService(s, memory).add_allergies(_uid(user_id), body.items)}
+            return {"allergies": ProfileService(s, memory).add_allergies(who(user_id, authorization), body.items)}
         except ValueError as exc:
             raise HTTPException(422, str(exc))
 
     @app.delete("/users/{user_id}/allergies", dependencies=auth)
-    def clear_allergies(user_id: str, s=Depends(db)):
-        ProfileService(s, memory).clear_allergies(_uid(user_id))
+    def clear_allergies(user_id: str, s=Depends(db), authorization: Optional[str] = Header(default=None)):
+        ProfileService(s, memory).clear_allergies(who(user_id, authorization))
         return {"allergies": []}
 
     @app.get("/users/{user_id}/history", dependencies=auth)
-    def get_history(user_id: str, limit: int = Query(20, ge=1, le=200), s=Depends(db)):
-        return {"messages": [m.model_dump() for m in HistoryService(s).recent(_uid(user_id), limit)]}
+    def get_history(user_id: str, limit: int = Query(20, ge=1, le=200), s=Depends(db), authorization: Optional[str] = Header(default=None)):
+        return {"messages": [m.model_dump() for m in HistoryService(s).recent(who(user_id, authorization), limit)]}
 
     @app.delete("/users/{user_id}/history", dependencies=auth)
-    def clear_history(user_id: str, s=Depends(db)):
-        return {"deleted": HistoryService(s).clear(_uid(user_id))}
+    def clear_history(user_id: str, s=Depends(db), authorization: Optional[str] = Header(default=None)):
+        return {"deleted": HistoryService(s).clear(who(user_id, authorization))}
 
     return app
 
