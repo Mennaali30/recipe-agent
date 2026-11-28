@@ -46,7 +46,7 @@ def env():
 
 def test_health(env):
     c = env[0]
-    assert c.get("/health").json() == {"status": "ok"}
+    assert c.get("/health").json() == {"status": "ok", "api_version": "1"}
 
 
 def test_chat_returns_supervisor_answer_for_user(env):

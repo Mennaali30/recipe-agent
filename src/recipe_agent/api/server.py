@@ -30,6 +30,8 @@ import re
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from recipe_agent.services.accounts import (AccountError, AccountService, auth_secret, issue_token,
@@ -38,6 +40,9 @@ from recipe_agent.services.profile import HistoryService, ProfileService, Profil
 
 log = logging.getLogger(__name__)
 USER_ID = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
+API_VERSION = "1"
+_CODES = {400: "bad_request", 401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict",
+          422: "invalid_request", 429: "rate_limited", 500: "server_error", 503: "unavailable"}
 QUOTA_WORDS = ("429", "resource_exhausted", "quota")
 
 
@@ -177,7 +182,7 @@ def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optio
 
     @app.get("/health")
     def health():
-        return {"status": "ok"}
+        return {"status": "ok", "api_version": API_VERSION}
 
     @app.post("/chat", response_model=ChatOut, dependencies=auth)
     def chat(body: ChatIn, authorization: Optional[str] = Header(default=None)):
@@ -232,6 +237,23 @@ def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optio
     @app.delete("/users/{user_id}/history", dependencies=auth)
     def clear_history(user_id: str, s=Depends(db), authorization: Optional[str] = Header(default=None)):
         return {"deleted": HistoryService(s).clear(who(user_id, authorization))}
+
+    from .features import build_router
+    app.include_router(build_router(who, sf, memory=memory, auth=auth))
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request, exc):
+        body = {"error": {"code": _CODES.get(exc.status_code, "error"), "message": str(exc.detail)}}
+        if getattr(exc, "candidates", None):
+            body["error"]["candidates"] = exc.candidates
+        return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        fields = [{"field": ".".join(str(p) for p in e["loc"][1:]) or str(e["loc"][0]), "message": e["msg"]}
+                  for e in exc.errors()]
+        return JSONResponse({"error": {"code": "invalid_request", "message": "the request is not valid",
+                                       "fields": fields}}, status_code=422)
 
     return app
 
