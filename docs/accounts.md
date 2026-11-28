@@ -1,5 +1,7 @@
 # Accounts: register and login
 
+**Update: accounts now use email + password, with password reset and optional email confirmation. See docs/api.md (Login) for the current API. The text below describes the first version (username); old username accounts still log in.**
+
 Each person has an account. Her profile, pantry, saved allergies and chat history belong to that account only.
 
 - Username: 3-32 characters, a-z 0-9 _ . - (lower case). It is also the user id. No email is needed (no email is sent or stored), so there is no "forgot password" by email yet: to reset one, the owner removes the row from the `accounts` table and the person registers again, or uses "change password" while logged in.

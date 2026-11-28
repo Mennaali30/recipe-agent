@@ -58,7 +58,7 @@ def make(sf, require_login=True, mem=None, clock=None):
 
 
 def reg(c, name="sara", pw="correct-horse"):
-    return c.post("/auth/register", json={"username": name, "password": pw})
+    return c.post("/auth/register", json={"email": f"{name}@example.com", "password": pw})
 
 
 def bearer(r):
@@ -146,33 +146,43 @@ def test_token_roundtrip_expiry_and_tamper():
 def test_register_login_me(sf):
     c, _ = make(sf)
     r = reg(c)
-    assert r.status_code == 200 and r.json()["user_id"] == "sara" and r.json()["token"]
+    uid = r.json()["user_id"]
+    assert r.status_code == 200 and uid.startswith("u_") and r.json()["token"] and r.json()["email"] == "sara@example.com"
     assert reg(c).status_code == 409
-    assert c.post("/auth/login", json={"username": "sara", "password": "nope-nope1"}).status_code == 401
-    ok = c.post("/auth/login", json={"username": "sara", "password": "correct-horse"})
-    assert ok.status_code == 200
-    assert c.get("/auth/me", headers=bearer(ok)).json() == {"user_id": "sara"}
+    assert c.post("/auth/login", json={"email": "sara@example.com", "password": "nope-nope1"}).status_code == 401
+    ok = c.post("/auth/login", json={"email": "SARA@example.com", "password": "correct-horse"})
+    assert ok.status_code == 200 and ok.json()["user_id"] == uid
+    assert c.get("/auth/me", headers=bearer(ok)).json() == {"user_id": uid, "email": "sara@example.com", "verified": False}
     assert c.get("/auth/me").status_code == 401
     assert "password" not in ok.text and "scrypt" not in ok.text
+
+
+def test_old_username_accounts_can_still_log_in(sf):
+    AccountService(sf(), clock=Clock(), fails={}).register("oldsara", "correct-horse")
+    c, _ = make(sf)
+    r = c.post("/auth/login", json={"email": "oldsara", "password": "correct-horse"})
+    assert r.status_code == 200 and r.json()["user_id"] == "oldsara" and r.json()["email"] is None
 
 
 def test_chat_needs_login_and_uses_the_token_user(sf):
     c, calls = make(sf)
     assert c.post("/chat", json={"message": "hi"}).status_code == 401
     t = reg(c)
+    uid = t.json()["user_id"]
     assert c.post("/chat", json={"message": "hi", "user_id": "someone_else"}, headers=bearer(t)).status_code == 403
     r = c.post("/chat", json={"message": "hi"}, headers=bearer(t))
-    assert r.json()["answer"] == "hi sara" and calls[-1] == ("hi", "sara")
-    assert c.post("/chat", json={"message": "hi", "user_id": "sara"}, headers=bearer(t)).status_code == 200
+    assert r.json()["answer"] == f"hi {uid}" and calls[-1] == ("hi", uid)
+    assert c.post("/chat", json={"message": "hi", "user_id": uid}, headers=bearer(t)).status_code == 200
 
 
 def test_users_cannot_read_each_others_data(sf):
     c, _ = make(sf)
     a, b = reg(c, "sara"), reg(c, "mona")
-    c.post("/users/sara/allergies", json={"items": ["milk"]}, headers=bearer(a))
-    assert c.get("/users/sara/profile", headers=bearer(a)).status_code == 200
-    for method, url in (("get", "/users/sara/profile"), ("get", "/users/sara/history"), ("delete", "/users/sara/history"),
-                        ("delete", "/users/sara/allergies"), ("delete", "/users/sara/profile")):
+    ua = a.json()["user_id"]
+    c.post(f"/users/{ua}/allergies", json={"items": ["milk"]}, headers=bearer(a))
+    assert c.get(f"/users/{ua}/profile", headers=bearer(a)).status_code == 200
+    for method, url in (("get", f"/users/{ua}/profile"), ("get", f"/users/{ua}/history"), ("delete", f"/users/{ua}/history"),
+                        ("delete", f"/users/{ua}/allergies"), ("delete", f"/users/{ua}/profile")):
         assert getattr(c, method)(url, headers=bearer(b)).status_code == 403
         assert getattr(c, method)(url).status_code == 401
 
@@ -183,13 +193,8 @@ def test_forged_or_expired_token_is_refused(sf):
     t = reg(c)
     clock.t += 8 * 24 * 3600
     assert c.post("/chat", json={"message": "hi"}, headers=bearer(t)).status_code == 401
-    forged = {"Authorization": "Bearer " + issue_token("sara", b"not-the-secret")}
+    forged = {"Authorization": "Bearer " + issue_token(t.json()["user_id"], b"not-the-secret")}
     assert c.post("/chat", json={"message": "hi"}, headers=forged).status_code == 401
-
-
-def test_register_refuses_an_old_id_that_has_saved_allergies(sf):
-    c, _ = make(sf, mem=FakeMem({"waad": ["milk"]}))
-    assert reg(c, "waad").status_code == 409
 
 
 def test_change_password_api(sf):
@@ -199,7 +204,7 @@ def test_change_password_api(sf):
     assert bad.status_code == 401
     ok = c.post("/auth/password", json={"old_password": "correct-horse", "new_password": "new-password1"}, headers=bearer(t))
     assert ok.status_code == 200
-    assert c.post("/auth/login", json={"username": "sara", "password": "new-password1"}).status_code == 200
+    assert c.post("/auth/login", json={"email": "sara@example.com", "password": "new-password1"}).status_code == 200
 
 
 def test_without_require_login_the_old_behaviour_is_unchanged(sf):
@@ -214,5 +219,5 @@ def test_the_api_key_still_applies_to_login(sf):
                      secret=SECRET)
     c = TestClient(app)
     assert reg(c).status_code == 401
-    r = c.post("/auth/register", json={"username": "sara", "password": "correct-horse"}, headers={"X-API-Key": "k"})
+    r = c.post("/auth/register", json={"email": "sara@example.com", "password": "correct-horse"}, headers={"X-API-Key": "k"})
     assert r.status_code == 200

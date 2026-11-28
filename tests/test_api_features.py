@@ -40,8 +40,12 @@ def env():
 
 
 def login(c, name="sara"):
-    r = c.post("/auth/register", json={"username": name, "password": "correct-horse"})
+    r = c.post("/auth/register", json={"email": f"{name}@example.com", "password": "correct-horse"})
     return {"Authorization": "Bearer " + r.json()["token"]}
+
+
+def uid_of(c, h):
+    return c.get("/auth/me", headers=h).json()["user_id"]
 
 
 def err(r):
@@ -58,7 +62,7 @@ def test_errors_use_one_format(env):
     e = c.post("/pantry/items", json={"items": []}, headers=h).json()["error"]
     assert e["fields"] and "field" in e["fields"][0]
     assert err(c.get("/recipes/egy:nope", headers=h))["code"] == "not_found"
-    assert err(c.post("/auth/login", json={"username": "sara", "password": "bad-bad-bad"}))["code"] == "unauthorized"
+    assert err(c.post("/auth/login", json={"email": "sara@example.com", "password": "bad-bad-bad"}))["code"] == "invalid_credentials"
 
 
 def test_every_feature_endpoint_needs_login(env):
@@ -154,7 +158,7 @@ def test_recipe_by_name_and_detail(env):
 def test_saved_allergies_are_always_applied(env):
     c, _, mem = env
     h = login(c)
-    mem.d["sara"] = ["milk"]
+    mem.d[uid_of(c, h)] = ["milk"]
     r = c.get("/recipes/by-name?q=كشري&limit=10", headers=h).json()
     assert r["applied_exclusions"] == ["milk"]
     for rec in r["recipes"]:
@@ -190,12 +194,12 @@ def test_pending_confirm_and_cancel(env):
     c.post("/pantry/items", json={"items": [{"name": "rice", "quantity": 1, "unit": "kg"}]}, headers=h)
     assert c.get("/pending", headers=h).json() == {"pending": None}
     with sf() as s:
-        ApprovalService(s).stage("sara", "pantry_discard", {"items": [{"name": "rice"}]}, "ar", "Throw away rice")
+        ApprovalService(s).stage(uid_of(c, h), "pantry_discard", {"items": [{"name": "rice"}]}, "ar", "Throw away rice")
     assert c.get("/pending", headers=h).json()["pending"]["summary_en"] == "Throw away rice"
     assert c.post("/pending/cancel", headers=h).json() == {"cancelled": True}
     assert c.get("/pantry", headers=h).json()[0]["quantity"] == 1000
     with sf() as s:
-        ApprovalService(s).stage("sara", "pantry_discard", {"items": [{"name": "rice"}]}, "ar", "Throw away rice")
+        ApprovalService(s).stage(uid_of(c, h), "pantry_discard", {"items": [{"name": "rice"}]}, "ar", "Throw away rice")
     assert c.post("/pending/confirm", headers=h).json() == {"done": True, "tool": "pantry_discard"}
     assert c.get("/pantry", headers=h).json() == []
     assert c.post("/pending/confirm", headers=h).status_code == 404

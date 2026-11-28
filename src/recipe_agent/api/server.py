@@ -56,9 +56,35 @@ class ChatOut(BaseModel):
     user_id: str
 
 
-class CredentialsIn(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+class CodedError(HTTPException):
+    """An HTTP error with its own machine-readable code in the error body."""
+
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(status, message)
+        self.code = code
+
+
+class RegisterIn(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
     password: str = Field(min_length=1, max_length=256)
+
+
+class LoginIn(BaseModel):
+    email: str = Field(min_length=1, max_length=254, description="the email (an old username also works)")
+    password: str = Field(min_length=1, max_length=256)
+
+
+class EmailIn(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
+
+
+class TokenIn(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
+class ResetIn(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=1, max_length=256)
 
 
 class PasswordIn(BaseModel):
@@ -67,11 +93,16 @@ class PasswordIn(BaseModel):
 
 
 class TokenOut(BaseModel):
-    token: str
+    token: Optional[str] = None
     user_id: str
+    email: Optional[str] = None
+    verified: bool = False
+    verification_required: bool = False
+    dev_link: Optional[str] = None
 
 
-_AUTH_STATUS = {"bad_username": 422, "bad_password": 422, "taken": 409, "invalid_credentials": 401, "locked": 429}
+_AUTH_STATUS = {"bad_username": 422, "bad_email": 422, "bad_password": 422, "taken": 409, "invalid_credentials": 401,
+                "locked": 429, "invalid_token": 400}
 
 
 class AllergiesIn(BaseModel):
@@ -85,12 +116,18 @@ def _uid(user_id: str) -> str:
 
 
 def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optional[str] = None,
-               require_login: Optional[bool] = None, secret: Optional[bytes] = None, clock=None) -> FastAPI:
+               require_login: Optional[bool] = None, secret: Optional[bytes] = None, clock=None,
+               mailer=None, require_verified: Optional[bool] = None, dev_mail: Optional[bool] = None) -> FastAPI:
     """answer_fn(text, user_id) -> str. Default: the supervisor (built on first use)."""
     api_key = api_key if api_key is not None else os.getenv("RECIPE_API_KEY")
     if require_login is None:
         require_login = os.getenv("RECIPE_REQUIRE_LOGIN", "").strip().lower() in ("1", "true", "yes")
     secret = secret or auth_secret()
+    flag = lambda name: os.getenv(name, "").strip().lower() in ("1", "true", "yes")
+    require_verified = flag("RECIPE_REQUIRE_VERIFIED") if require_verified is None else require_verified
+    dev_mail = flag("RECIPE_DEV_MAIL") if dev_mail is None else dev_mail
+    from recipe_agent.services import mailer as mail_mod
+    mailer = mailer or mail_mod.get_mailer()
     import time as _time
     clock = clock or _time.time
     app = FastAPI(title="Matbakhak AI API", version="6a")
@@ -142,34 +179,87 @@ def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optio
         try:
             return fn()
         except AccountError as exc:
-            raise HTTPException(_AUTH_STATUS.get(exc.code, 400), str(exc))
+            raise CodedError(_AUTH_STATUS.get(exc.code, 400), exc.code, str(exc))
+
+    def send_mail(pair, builder):
+        """Send a reset/verify mail for (token, email). Never raises. Returns the link (only used in dev mode)."""
+        if not pair:
+            return None
+        subject, text, link = builder(pair[0])
+        try:
+            mailer.send(pair[1], subject, text)
+        except Exception:
+            log.exception("mailer failed")
+        return link
+
+    def session_out(svc, uid, token_ok=True):
+        verified = svc.is_verified(uid)
+        return TokenOut(token=issue_token(uid, secret, clock()) if token_ok else None, user_id=uid,
+                        email=svc.email_of(uid), verified=verified,
+                        verification_required=bool(require_verified and not verified))
 
     @app.post("/auth/register", response_model=TokenOut, dependencies=auth)
-    def register(body: CredentialsIn):
-        name = body.username.strip().lower()
-        try:   # an old id that already has saved allergies belongs to someone: not available
-            if memory is not None and memory.get_exclusions(name):
-                raise HTTPException(409, "this username is not available")
-        except HTTPException:
-            raise
-        except Exception:
-            log.exception("memory check at register failed")
+    def register(body: RegisterIn):
         with sf()() as s:
-            uid = auth_call(lambda: AccountService(s, clock).register(body.username, body.password))
-        return TokenOut(token=issue_token(uid, secret, clock()), user_id=uid)
+            svc = AccountService(s, clock)
+            uid = auth_call(lambda: svc.register_email(body.email, body.password))
+            link = send_mail(svc.request_verification(uid), mail_mod.verify_mail)
+            out = session_out(svc, uid, token_ok=not require_verified)
+        if dev_mail:
+            out.dev_link = link
+        return out
 
     @app.post("/auth/login", response_model=TokenOut, dependencies=auth)
-    def login(body: CredentialsIn):
+    def login(body: LoginIn):
         with sf()() as s:
-            uid = auth_call(lambda: AccountService(s, clock).authenticate(body.username, body.password))
-        return TokenOut(token=issue_token(uid, secret, clock()), user_id=uid)
+            svc = AccountService(s, clock)
+            uid = auth_call(lambda: svc.authenticate(body.email, body.password))
+            if require_verified and svc.email_of(uid) and not svc.is_verified(uid):
+                raise CodedError(403, "email_not_verified", "confirm your email first: open the link we sent you")
+            return session_out(svc, uid)
+
+    @app.post("/auth/forgot", dependencies=auth)
+    def forgot(body: EmailIn):
+        """Always answers the same, so it never shows which emails have an account."""
+        with sf()() as s:
+            link = send_mail(AccountService(s, clock).request_reset(body.email), mail_mod.reset_mail)
+        out = {"sent": True}
+        if dev_mail and link:
+            out["dev_link"] = link
+        return out
+
+    @app.post("/auth/reset", dependencies=auth)
+    def reset(body: ResetIn):
+        with sf()() as s:
+            auth_call(lambda: AccountService(s, clock).reset_password(body.token, body.new_password))
+        return {"reset": True}
+
+    @app.post("/auth/verify", dependencies=auth)
+    def verify(body: TokenIn):
+        with sf()() as s:
+            auth_call(lambda: AccountService(s, clock).verify_email(body.token))
+        return {"verified": True}
+
+    @app.post("/auth/resend", dependencies=auth)
+    def resend(body: EmailIn):
+        """Sends the confirmation mail again (same answer whatever the email is)."""
+        with sf()() as s:
+            svc = AccountService(s, clock)
+            uid = svc.user_for_email(body.email)
+            link = send_mail(svc.request_verification(uid), mail_mod.verify_mail) if uid else None
+        out = {"sent": True}
+        if dev_mail and link:
+            out["dev_link"] = link
+        return out
 
     @app.get("/auth/me", dependencies=auth)
     def me(authorization: Optional[str] = Header(default=None)):
         uid = token_user(authorization)
         if uid is None:
             raise HTTPException(401, "login required")
-        return {"user_id": uid}
+        with sf()() as s:
+            svc = AccountService(s, clock)
+            return {"user_id": uid, "email": svc.email_of(uid), "verified": svc.is_verified(uid)}
 
     @app.post("/auth/password", dependencies=auth)
     def change_password(body: PasswordIn, authorization: Optional[str] = Header(default=None)):
@@ -244,6 +334,8 @@ def create_app(answer_fn=None, session_factory=None, memory=None, api_key: Optio
     @app.exception_handler(HTTPException)
     async def http_error(request, exc):
         body = {"error": {"code": _CODES.get(exc.status_code, "error"), "message": str(exc.detail)}}
+        if getattr(exc, "code", None):
+            body["error"]["code"] = exc.code
         if getattr(exc, "candidates", None):
             body["error"]["candidates"] = exc.candidates
         return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
