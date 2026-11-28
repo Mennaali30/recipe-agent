@@ -92,10 +92,10 @@ def test_bad_requests(env):
     assert c.post("/meal-plans/replan", json={"plan": [], "replace": []}).status_code == 401
 
 
-def test_no_recipe_fits_is_a_clear_conflict(env):
+def test_nothing_at_all_fits_is_the_only_hard_error(env):
     c, _, h, _ = env
     r = c.post("/meal-plans", json={"meals": 3, "max_minutes": 1}, headers=h)
-    assert r.status_code == 409 and "recipes" in r.json()["error"]["message"]
+    assert r.status_code == 409 and "no recipe" in r.json()["error"]["message"]
 
 
 def test_replan_changes_only_the_chosen_meals(env):
@@ -128,8 +128,9 @@ def test_replan_refuses_unknown_things(env):
     plan = [{"recipe_id": m["recipe_id"], "meal_type": "meal"} for m in p["meals"]]
     assert c.post("/meal-plans/replan", json={"plan": plan, "replace": [7]}, headers=h).status_code == 422
     assert c.post("/meal-plans/replan", json={"plan": [{"recipe_id": "egy:nope"}], "replace": [0]}, headers=h).status_code == 422
-    assert c.post("/meal-plans/replan", json={"plan": plan, "replace": [0], "cheaper": True,
-                                              "max_minutes": 1}, headers=h).status_code == 409
+    stuck = c.post("/meal-plans/replan", json={"plan": plan, "replace": [0], "cheaper": True, "max_minutes": 1}, headers=h)
+    assert stuck.status_code == 200 and ids(stuck.json()) == ids(p)                  # nothing else fits: unchanged + advice
+    assert [t["code"] for t in stuck.json()["suggestions"]] == ["no_other_recipe"]
 
 
 def test_only_well_priced_normal_recipes_are_used():
@@ -150,7 +151,31 @@ def test_scarce_breakfasts_fall_back_to_other_recipes_instead_of_failing():
     assert len(set(ids(p))) == 8
 
 
-def test_too_few_safe_recipes_is_an_honest_error_not_a_repeat():
-    with pytest.raises(mealplan.PlanError) as e:
-        mealplan.make_plan(days=7, meals_per_day=2, exclude=["milk", "egg"])
-    assert e.value.code == "no_candidates"
+def test_too_few_safe_recipes_gives_a_plan_with_flagged_repeats_and_advice():
+    p = mealplan.make_plan(days=7, meals_per_day=2, exclude=["milk", "egg"], relaxable=["egg"])
+    assert len(p["meals"]) == 14 and p["repeats"] == 14 - len(set(ids(p))) > 0
+    assert [m["repeat"] for m in p["meals"]].count(True) == p["repeats"]
+    codes = [t["code"] for t in p["suggestions"]]
+    assert codes[0] == "recipes_short" and "relax_exclusion" in codes
+    t = p["suggestions"][0]
+    assert t["unique_meals"] < t["planned_meals"] and t["message_ar"] and t["message_en"]
+    assert not any(egypt_store.excluded(egypt_store.get_recipe(r), ["milk", "egg"]) for r in ids(p))      # repeats never break allergies
+
+
+def test_a_normal_plan_has_no_repeats_and_no_suggestions():
+    p = mealplan.make_plan(meals=5)
+    assert p["repeats"] == 0 and p["suggestions"] == [] and not any(m["repeat"] for m in p["meals"])
+
+
+def test_budget_too_small_comes_with_advice():
+    p = mealplan.make_plan(meals=5, budget_egp=3)
+    assert p["budget_status"] == "over_budget" and p["suggestions"][-1]["code"] == "budget_too_small"
+
+
+def test_api_returns_200_with_suggestions_when_recipes_are_short(env):
+    c, mem, h, uid = env
+    mem.d[uid] = ["milk"]
+    r = c.post("/meal-plans", json={"days": 7, "meals_per_day": 2}, headers=h)
+    assert r.status_code == 200
+    p = r.json()
+    assert len(p["meals"]) == 14 and p["repeats"] > 0 and p["suggestions"][0]["code"] == "recipes_short" and p["shopping"]

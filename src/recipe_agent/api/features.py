@@ -215,7 +215,7 @@ def build_router(who, session_factory, memory=None, registry=None, auth=None, to
         excl = list(dict.fromkeys([*saved_exclusions(uid), *[x.strip() for x in body.exclude if x.strip()]]))
         plan = plan_call(mealplan.make_plan, meals=body.meals, days=body.days, meals_per_day=body.meals_per_day,
                          budget_egp=body.budget_egp, exclude=excl, max_minutes=body.max_minutes, seed=body.seed,
-                         lang=body.lang)
+                         lang=body.lang, relaxable=[x.strip() for x in body.exclude if x.strip()])
         return plan_response(uid, plan, excl, body.use_pantry)
 
     @router.post("/meal-plans/replan")
