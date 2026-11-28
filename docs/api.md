@@ -96,5 +96,16 @@ A recipe is `{"recipe_id": "egy:fah-096"}` or `{"name": "كشري"}` (409 with `
 | `POST /business/production-plan` | `{"recipe": R, "meals": 20, "selling_price_per_meal": 60, "extra_expenses": [], "target_margin_pct": 30}` -> cost, revenue, profit, margin, suggested price |
 Prices that are not known stay unknown: they are listed, never guessed.
 
+### Meal plans
+A meal is one serving. Same input + same `seed` = same plan. Saved allergies are always applied. Recipes with a large unpriced part or unknown servings are never used, so a plan's price is never far too low.
+`POST /meal-plans` body (give `meals`, OR `days` with `meals_per_day`):
+`{"meals": 5}` or `{"days": 7, "meals_per_day": 2, "budget_egp": 400, "use_pantry": false, "exclude": ["egg"], "max_minutes": 45, "seed": 0, "lang": "ar"}`.
+`meals_per_day`: 1 = lunch, 2 = breakfast + dinner, 3 = breakfast + lunch + dinner. `meals`: 1-21, every recipe different.
+Response: `{"meals": [{"slot", "day", "meal_type", "recipe_id", "name", "category", "total_minutes", "cost_low_egp", "cost_high_egp", "price_complete", "unpriced"}], "total_low_egp", "total_high_egp", "budget_egp", "budget_status", "partial_cost", "partial_cost_recipes", "applied_exclusions", "shopping": {...same as POST /shopping...}, "currency": "EGP"}`.
+`budget_status` (null if no budget): `within_budget` (even the high end fits), `might_exceed` (only the low end fits), `over_budget` (nothing cheaper exists; the plan is still returned so the UI can say so).
+The plan is stateless: the UI keeps it. "Give me another plan" = same call with `seed` + 1.
+409 `conflict` when too few safe recipes exist for the request (the dataset is rich in dairy and eggs, so a week with many allergies can be impossible; the message says so). The UI should then suggest fewer days or fewer exclusions.
+`POST /meal-plans/replan` body: `{"plan": [{"recipe_id": "egy:...", "meal_type": "lunch"}], "replace": [1, 4], "budget_egp": 300, "cheaper": false, "exclude": [], "use_pantry": false, "seed": 0}`. `replace` holds positions (0-based) or recipe ids. Only those meals change; the rest stay. `cheaper: true` only accepts cheaper replacements. Same response as `POST /meal-plans`.
+
 ## Not in version 1 yet
-Meal plans with budget and replanning, Business Mode beyond the production plan, saved shopping lists, recipe filters. They will be added as new endpoints; existing ones will not change shape.
+Business Mode beyond the production plan, saved shopping lists, recipe filters (cheap, healthy, diet). They will be added as new endpoints; existing ones will not change shape.

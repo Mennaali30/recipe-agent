@@ -10,16 +10,46 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field
 
 from recipe_agent import egypt_store, tools as recipe_tools
-from recipe_agent.multi.tools import (BudgetArgs, ConvertArgs, CostArgs, EmptyArgs, PantryAdjustArgs,
+from recipe_agent.multi.tools import (RecipeRef, ShoppingRecipe, BudgetArgs, ConvertArgs, CostArgs, EmptyArgs, PantryAdjustArgs,
                                       PantryChangeArgs, PantryDiscardArgs, PantryReadArgs, PantryUseArgs,
                                       ProductionArgs, ShoppingArgs, ToolContext, build_registry)
-from recipe_agent.services import ApprovalService
+from recipe_agent.services import ApprovalService, mealplan
 
 log = logging.getLogger(__name__)
 STATUS = {"bad_args": 422, "unit": 422, "not_found": 404, "ambiguous": 409, "insufficient_stock": 409,
           "not_allowed": 403, "needs_approval": 409, "failed": 500}
+
+
+class MealPlanIn(BaseModel):
+    meals: Optional[int] = Field(default=None, ge=1, le=21, description="N different meals (one serving each)")
+    days: Optional[int] = Field(default=None, ge=1, le=7)
+    meals_per_day: Optional[int] = Field(default=None, ge=1, le=3, description="1 lunch; 2 breakfast+dinner; 3 all")
+    budget_egp: Optional[float] = Field(default=None, ge=0)
+    use_pantry: bool = False
+    exclude: list[str] = Field(default_factory=list, max_length=30, description="added to the saved allergies")
+    max_minutes: Optional[int] = Field(default=None, ge=1, le=600)
+    seed: int = Field(default=0, ge=0, le=100000, description="change it to get a different plan")
+    lang: str = Field(default="ar", pattern="^(ar|en)$")
+
+
+class PlanMeal(BaseModel):
+    recipe_id: str
+    meal_type: str = "meal"
+
+
+class ReplanIn(BaseModel):
+    plan: list[PlanMeal] = Field(min_length=1, max_length=21)
+    replace: list = Field(min_length=1, max_length=21, description="positions (0-based) or recipe ids to swap")
+    budget_egp: Optional[float] = Field(default=None, ge=0)
+    use_pantry: bool = False
+    exclude: list[str] = Field(default_factory=list, max_length=30)
+    max_minutes: Optional[int] = Field(default=None, ge=1, le=600)
+    seed: int = Field(default=0, ge=0, le=100000)
+    cheaper: bool = False
+    lang: str = Field(default="ar", pattern="^(ar|en)$")
 
 
 def build_router(who, session_factory, memory=None, registry=None, auth=None, today=None) -> APIRouter:
@@ -161,6 +191,40 @@ def build_router(who, session_factory, memory=None, registry=None, auth=None, to
             "cost": {k: e["cost"].get(k) for k in ("low_egp", "high_egp", "price_label", "total_egp", "per_serving_egp",
                                                    "coverage", "unpriced", "approximate", "currency")},
         })
+
+    # ---------------- meal plans ----------------
+    def plan_response(uid, plan, exclusions, use_pantry):
+        out = dict(plan)
+        out["applied_exclusions"] = exclusions
+        counts = {}
+        for m in plan["meals"]:
+            counts[m["recipe_id"]] = counts.get(m["recipe_id"], 0) + 1
+        out["shopping"] = run("shopping_list", ShoppingArgs(
+            recipes=[ShoppingRecipe(recipe=RecipeRef(recipe_id=r), meals=n) for r, n in counts.items()],
+            use_pantry=use_pantry), uid)
+        return out
+
+    def plan_call(fn, *a, **kw):
+        try:
+            return fn(*a, **kw)
+        except mealplan.PlanError as exc:
+            raise HTTPException(422 if exc.code == "bad_args" else 409, str(exc))
+
+    @router.post("/meal-plans")
+    def meal_plan(body: MealPlanIn, uid: str = Depends(user_dep)):
+        excl = list(dict.fromkeys([*saved_exclusions(uid), *[x.strip() for x in body.exclude if x.strip()]]))
+        plan = plan_call(mealplan.make_plan, meals=body.meals, days=body.days, meals_per_day=body.meals_per_day,
+                         budget_egp=body.budget_egp, exclude=excl, max_minutes=body.max_minutes, seed=body.seed,
+                         lang=body.lang)
+        return plan_response(uid, plan, excl, body.use_pantry)
+
+    @router.post("/meal-plans/replan")
+    def meal_replan(body: ReplanIn, uid: str = Depends(user_dep)):
+        excl = list(dict.fromkeys([*saved_exclusions(uid), *[x.strip() for x in body.exclude if x.strip()]]))
+        plan = plan_call(mealplan.replan, [m.recipe_id for m in body.plan], body.replace, budget_egp=body.budget_egp,
+                         exclude=excl, max_minutes=body.max_minutes, seed=body.seed, cheaper=body.cheaper,
+                         meal_types=[m.meal_type for m in body.plan], lang=body.lang)
+        return plan_response(uid, plan, excl, body.use_pantry)
 
     # ---------------- pending confirmations (the chat asks "yes/no"; these are the buttons) ----------------
     @router.get("/pending")
